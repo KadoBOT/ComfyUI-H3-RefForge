@@ -7,6 +7,19 @@
 
 ## What's new — v0.2.6
 
+- **Standalone creators** — Create H3 RefMod and Master now run without a
+  downstream output node. Both return a `details` string with token counts and
+  saved paths. `save=False` still produces an in-memory bundle without files.
+- **Different-size masks** — route a MASK list through **Collect H3 RefMod
+  Masks** into the creator's `mask_list` input. Each mask retains its dimensions
+  until it is resized/cropped with its corresponding reference. The collector
+  consumes the list once, avoiding one extraction per list item. Use `mask` or
+  `mask_list`; one mask broadcasts, otherwise provide one per reference in
+  image-slot, video-slot, then folder-bundle order. Existing MASK batches work
+  as before. Pixels cropped by an upstream batch node cannot be recovered.
+- **Full Reference video sampling** — choose a causal frame count before
+  sampling, so frame limits such as 16 no longer drop the end of the clip.
+
 - **Compact additive loaders** — Loader and Axis start with one visible slot.
   Use **+ Add RefMod** to reveal more, up to the existing eight slots. Each
   reference's controls stay together; connected slots are protected from removal.
@@ -270,6 +283,8 @@ Both visual and audio Extract support an optional save subfolder.
 Validation: `python -m unittest discover -s tests -v` runs production-code
 regressions. `python gauntlet_harness.py --device cuda` compares resident,
 streaming and grouped multi-ref refinement with numerical parity checks.
+`python issue_regression_test.py` checks standalone creators, different-size
+mask lists and video sampling without loading model weights.
 `python tests/audio_smoke.py PATH_TO_H3_AUDIO_VAE` exercises the real codec,
 safetensors roundtrip and native H3 reference layout without loading the DiT.
 
@@ -318,6 +333,7 @@ uses the explicit error/prefix-truncation policy described above.
 | H3 RefMod Text Encode | Encode a prompt with numbered saved references; outputs conditioning and the reference map. |
 | Create H3 RefMod Master | Visual and/or audio extraction into one bundle, with separate VAE inputs. |
 | Create H3 RefMod | Visual extraction, masks, compression and optional refinement. |
+| Collect H3 RefMod Masks | Pack a MASK list or batch without resizing; connect to the creator's `mask_list`. |
 | Create H3 Audio RefMod | Audio extraction with duration and token limits. |
 | Save H3 RefMods | Save a bundle as an output node; no downstream connection required. |
 | Save H3 RefMod Bundle | Pack selected references into one `.safetensors`; no downstream connection required. |
@@ -720,6 +736,14 @@ override, and `scramble_seed=-1`. A constant linear curve at **0** replaces
 every reference frame with its blurred version; it does not disable the curve.
 Spatial pooling and Refinement Steps do not affect Full Reference mode.
 
+Use a **Ref2VA checkpoint and reference workflow** for this comparison.
+[MiniMax's model card](https://huggingface.co/MiniMaxAI/MiniMax-H3#model-variants-and-input-specifications)
+distinguishes FL2VA first/last-frame conditioning from Ref2VA video references.
+Using the same first image in extraction and FL2VA generation does not make a
+RefMod a motion controller. A still alone contains no temporal sequence;
+connect the source clip to `ref_video`. RefMods guide generation through visual
+references and do not guarantee an exact motion replay, even with Ref2VA.
+
 Apply alone does not present the reference video to Qwen. Compare with H3
 RefMod Text Encode when the workflow accepts external conditioning, using the
 reported Video label and without applying the same refs twice. This reconstructs
@@ -730,7 +754,9 @@ settings, not validated optimal settings or a guarantee of motion fidelity.
 
 For longer video references, increase `latent_frames` and the token budget
 together. In `encode`, `latent_frames` limits sampled **source frames** before
-the VAE's causal 4k+1 trimming and temporal compression; set it at least to
+the VAE's temporal compression. When sampling, the count is snapped down to
+4k+1 first (16 becomes 13), then sampled across the full clip, including its
+last frame when more than one frame survives. Set the limit at least to
 the source frame count to avoid that sampling. In `training`, it limits the
 **latent frames** retained after encoding. It is not a duration in seconds.
 `max_tokens=0` disables the extraction token cap; loader/Apply/bridge budgets

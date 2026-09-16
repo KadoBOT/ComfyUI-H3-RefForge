@@ -48,7 +48,7 @@ import torch.nn.functional as F
 import comfy.patcher_extension
 import comfy.utils
 import folder_paths
-from comfy_api.latest import io
+from comfy_api.latest import io, ui
 from comfy_execution.validation import validate_node_input
 from comfy_extras.nodes_audio import vae_decode_audio
 from .library import register_routes
@@ -943,7 +943,9 @@ class MiniMaxH3RefModApply(io.ComfyNode):
             description=(
                 "Inject a loader bundle of RefMods into a MiniMax H3 conditioning. "
                 "Accepts both the pack's MINIMAX_H3_COND and the built-in "
-                "CONDITIONING and returns the same type."
+                "CONDITIONING and returns the same type. For video references use "
+                "a Ref2VA checkpoint and reference workflow; FL2VA first-frame "
+                "conditioning does not provide a motion-copy guarantee."
             ),
             category="MiniMax-H3/mod",
             inputs=[
@@ -1517,6 +1519,32 @@ class MiniMaxH3RefModFolderLoader:
 # Node: MiniMaxH3RefModExtract (V3 — Autogrow reference inputs)
 # ═══════════════════════════════════════════════════════════════════════════
 
+class MiniMaxH3RefModMaskList:
+    """Collect ComfyUI list items without batching or resizing their pixels."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"masks": ("MASK",)}}
+
+    INPUT_IS_LIST = True
+    RETURN_TYPES = ("H3_MASK_LIST",)
+    RETURN_NAMES = ("mask_list",)
+    FUNCTION = "collect"
+    CATEGORY = "MiniMax-H3/mod"
+    DESCRIPTION = ("Collect a MASK list or batch without resizing. Connect mask_list to Create H3 RefMod or Master. "
+                   "Use one mask for all references, or one per image, video, then folder reference in order.")
+
+    def collect(self, masks):
+        items = []
+        for mask in masks:
+            batch = _normalize_mask_batch(mask)
+            if batch is not None:
+                items.extend(batch[i:i + 1] for i in range(batch.shape[0]))
+        if not items:
+            raise ValueError("Connect at least one mask to Collect H3 RefMod Masks.")
+        return (items,)
+
+
 class MiniMaxH3RefModExtract(io.ComfyNode):
     """
     Turn one or more references of the same concept into a RefMod.
@@ -1567,6 +1595,7 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
         return io.Schema(
             node_id="MiniMaxH3RefModExtract",
             display_name="Create H3 RefMod",
+            is_output_node=True,
             description=(
                 "Turn one or more references of the same concept into a RefMod. "
                 "Stills plug into ref_image_1, video frames into ref_video_1, "
@@ -1649,7 +1678,7 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                     tooltip="Pooled mode: grid width (long edge if the source is wider than tall)."),
                 io.Int.Input("latent_frames", default=16, min=1, max=2147483647,
                     tooltip="Per-video temporal limit. Encode mode samples up to this many source frames "
-                            "before VAE encoding and causal 4k+1 trimming; training mode pools to "
+                            "on the causal 4k+1 grid before VAE encoding (16 selects 13 across the clip); training mode pools to "
                             "up to this many latent frames after encoding. Set at least the source "
                             "frame count to avoid encode-mode sampling. Images use 1. Higher values "
                             "increase memory and token cost; max_tokens can still reduce the result."),
@@ -1703,6 +1732,8 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                             "the mod and printed in the info block — documentation only, no wiring."),
                 io.Boolean.Input("save", default=True, label_on="save", label_off="don't save",
                     tooltip="Save the mod to mods/ so Load H3 RefMods can pick it up later."),
+                io.Custom("H3_MASK_LIST").Input("mask_list", optional=True,
+                    tooltip="Connect Collect H3 RefMod Masks to preserve different mask sizes. One mask broadcasts; otherwise images, videos, then folder references in order. Use mask OR mask_list."),
                 io.Combo.Input("budget_policy", options=["truncate", "error"], default="truncate", optional=True,
                     tooltip="On max_tokens overflow: truncate uses the existing frame reduction; error stops without saving. 0 max_tokens disables the cap."),
             ],
@@ -1710,6 +1741,7 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                 io.Custom("H3_REF_MODS").Output("mods",
                     tooltip="Bundle with this one mod at strength 1.0. Feed it to Apply H3 RefMod "
                             "(or Load H3 RefMods after saving)."),
+                io.String.Output("details"),
             ],
         )
 
@@ -1719,7 +1751,7 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                 ref_resolution=1024, pool_h=16, pool_w=16, latent_frames=16,
                 identity=500, multiplier=1, max_tokens=0, description="", save=True,
                 concept_type="generic", mask=None, background_retention=0.0, subfolder="",
-                merge=False, motion_only=False, extraction_preset="manual", budget_policy="truncate", **legacy) -> io.NodeOutput:
+                merge=False, motion_only=False, extraction_preset="manual", budget_policy="truncate", mask_list=None, **legacy) -> io.NodeOutput:
         if budget_policy not in ("truncate", "error"):
             raise ValueError("Unknown visual token budget policy.")
         name = _sanitize_name(name)
@@ -1750,7 +1782,7 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
         ignored = []
         if mode == "encode":
             ignored.append("pool_h, pool_w, Refinement Steps, merge, motion_only (Full Reference)")
-        if mask is None:
+        if mask is None and mask_list is None:
             ignored.append("background_retention (no mask)")
         if max_tokens == 0:
             ignored.append("budget_policy (max_tokens=0)")
@@ -1841,13 +1873,16 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                       f"{w0}x{h0} (avoids squishing the subject wide)")
         gh, gw = pool_grid if pool_grid is not None else (pool_h, pool_w)
 
-        mask_batch = _normalize_mask_batch(mask, label="mask")
-        if mask_batch is not None:
-            if mask_batch.shape[0] == 1 and len(sources) > 1:
-                mask_batch = mask_batch.expand(len(sources), -1, -1)
-            elif mask_batch.shape[0] != len(sources):
+        if mask is not None and mask_list is not None:
+            raise ValueError("Connect mask or mask_list, not both; their reference mapping is ambiguous.")
+        masks = None
+        if mask is not None or mask_list is not None:
+            masks = MiniMaxH3RefModMaskList().collect([mask] if mask_list is None else mask_list)[0]
+            if len(masks) == 1:
+                masks = masks * len(sources)
+            elif len(masks) != len(sources):
                 raise ValueError(
-                    f"MiniMaxH3RefModExtract: mask has {mask_batch.shape[0]} entries but "
+                    f"MiniMaxH3RefModExtract: mask has {len(masks)} entries but "
                     f"there are {len(sources)} references (images then videos, in order). "
                     f"Connect one mask (broadcasts to every ref) or exactly one per ref.")
 
@@ -1871,7 +1906,10 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                 # downscale (never upscale) to the target short edge, sample
                 # videos to latent_frames frames, then encode at full res
                 if is_video and latent_frames < src.shape[0]:
-                    idx = torch.linspace(0, src.shape[0] - 1, latent_frames).round().long()
+                    # Snap the count before sampling so causal trimming cannot
+                    # discard the end of the sampled motion sequence.
+                    count = _snap_to_causal_grid(latent_frames)
+                    idx = torch.linspace(0, src.shape[0] - 1, count, device=src.device).round().long()
                     src = src[idx]
                 src = _resize_ref(src, ref_resolution, canvas)
             else:
@@ -1911,8 +1949,8 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                           f"to match the VAE's causal 4k+1 grid.")
                     src = src[:valid_t]
             mask_px = None
-            if mask_batch is not None:
-                mask_px = _resize_mask(mask_batch[src_idx:src_idx + 1], src.shape[1], src.shape[2],
+            if masks is not None:
+                mask_px = _resize_mask(masks[src_idx], src.shape[1], src.shape[2],
                                        "center" if mode == "encode" and canvas is not None else "disabled")
             if src.shape[1] <= 0 or src.shape[2] <= 0:
                 raise ValueError(
@@ -2014,7 +2052,7 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
             tags.append("motion_only")
         if multiplier > 1:
             tags.append(f"x{multiplier} repeat")
-        if mask_batch is not None:
+        if masks is not None:
             tags.append(f"masked (bg_retention={background_retention})")
         mod = H3RefMod(
             name=name,
@@ -2043,7 +2081,11 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
             print(f"[MiniMaxH3RefModExtract] {_summarize(mod)} (not saved)")
         if mod.description:
             print(f"[MiniMaxH3RefModExtract] description: {mod.description}")
-        return io.NodeOutput([(mod, 1.0)])
+        details = json.dumps({"name": mod.name, "kind": mod.kind,
+                              "latent_frames": mod.latent_t, "tokens": mod.token_count,
+                              "source_shape": mod.source_shape,
+                              "saved_paths": [path] if save else []}, indent=2, ensure_ascii=False)
+        return io.NodeOutput([(mod, 1.0)], details, ui=ui.PreviewText(details))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2313,10 +2355,11 @@ class MiniMaxH3RefModMasterExtract(io.ComfyNode):
         details = json.dumps({"name": name, "total_tokens": total, "saved_paths": saved_paths,
                               "refs": [{"name":m.name, "kind":m.kind, "tokens":m.token_count,
                                         "path":m.path} for m, _ in mods]}, indent=2, ensure_ascii=False)
-        return io.NodeOutput(mods, details)
+        return io.NodeOutput(mods, details, ui=ui.PreviewText(details))
 
 
 NODE_CLASS_MAPPINGS = {
+    "MiniMaxH3RefModMaskList": MiniMaxH3RefModMaskList,
     "MiniMaxH3RefModBundleSave": MiniMaxH3RefModBundleSave,
     "MiniMaxH3RefModTextEncode": MiniMaxH3RefModTextEncode,
     "MiniMaxH3RefModSave": MiniMaxH3RefModSave,
@@ -2335,6 +2378,7 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
+    "MiniMaxH3RefModMaskList": "Collect H3 RefMod Masks",
     "MiniMaxH3RefModBundleSave": "Save H3 RefMod Bundle",
     "MiniMaxH3RefModTextEncode": "H3 RefMod Text Encode",
     "MiniMaxH3RefModSave": "Save H3 RefMods",
