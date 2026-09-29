@@ -61,7 +61,7 @@ if ROOT not in sys.path:
 import torch
 
 from common import (load_image_file, load_video_file, refmods_dir, mod_output_path,
-                    resize_ref as _resize_ref, ensure_min_size, snap_to_causal_grid)
+                    resize_ref as _resize_ref, ensure_min_size, sample_video_for_vae)
 from core import (CONCEPT_TYPES, H3RefMod, aspect_grid, fit_token_budget,
                   normalize_mode, optimize_latent, pool_latent)
 
@@ -105,7 +105,7 @@ def main():
     ap.add_argument("--pool", type=int, default=16, help="training mode: spatial latent grid (even, default 16)")
     ap.add_argument("--pool-w", type=int, default=None, help="pool width (default: == --pool)")
     ap.add_argument("--latent-frames", type=int, default=16,
-                    help="frames kept per video ref (default 16; images use 1): training mode pools them, encode mode samples them")
+                    help="frames kept per video ref (default 16; images use 1): training mode pools latent frames; encode mode samples source frames on H3's 17k+5 grid (16 selects 5, below 5 selects the first image)")
     ap.add_argument("--identity", type=int, default=500,
                     help="training mode: how tightly the mod clings to the reference (gradient refinement steps; default 500, 0 = pure pooling)")
     ap.add_argument("--multiplier", type=int, default=1,
@@ -124,7 +124,7 @@ def main():
                     help="what this mod represents (default: generic). 'identity' in --mode training "
                          "prints a warning: pooling is lossy in exactly the way that destroys faces — "
                          "use --mode encode for people.")
-    ap.add_argument("--device", default="auto", help="auto / cuda / cpu (VAE device)")
+    ap.add_argument("--device", default="auto", help="auto / cuda / mps / cpu (VAE device)")
     args = ap.parse_args()
     args.mode = normalize_mode(args.mode)  # accept legacy 'full'/'pooled'
 
@@ -206,13 +206,8 @@ def main():
         n_img += 1
     for path in args.video:
         src = _load_video(path, load_max_edge, args.max_frames)
-        if args.mode == "encode":
-            n_src = src.shape[0]
-            if args.latent_frames < n_src:
-                idx = torch.linspace(0, n_src - 1, args.latent_frames).round().long()
-                src = src[idx]
+        src = sample_video_for_vae(src, args.latent_frames if args.mode == "encode" else None)
         src = ensure_min_size(_resize_ref(src, args.resolution, canvas))
-        src = src[:snap_to_causal_grid(src.shape[0])]
         print(f"[extract] video {path}: {tuple(src.shape)} (mode={args.mode})")
         with torch.no_grad():
             z = vae.encode(src.to(device)).float().cpu()

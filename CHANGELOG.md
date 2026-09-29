@@ -7,6 +7,9 @@ rely on.
 
 ## Unreleased
 
+- Correct visual reference sampling to H3's 17k+5 video grid in the node and CLI. Preserve all frames of aligned clips and both endpoints when uniformly sampling; references/caps below five frames use the first image.
+- Support MPS-resident RefMod latents without global CPU fallback: pool and blur explicitly on CPU, preserving return device, dtype and autograd. Synchronize MPS in the refinement timing harness.
+
 - Add a reference_map output to Inspect H3 RefMod for LLM prompt generation before Text Encode, using the same reference numbering (#19).
 - Fix Loader/Axis settings resetting when switching workflow tabs or reopening workflows: defer slot regrouping until widget restoration finishes (#18).
 - Repair Apply's reactive MatchType socket on older frontends whose canvas socket classes use private fields, preventing missing controls while preserving conditioning type matching (#17).

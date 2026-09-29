@@ -180,20 +180,35 @@ def resize_ref(image, short_edge: int, canvas=None):
 
 
 def snap_to_causal_grid(n_frames: int) -> int:
-    """Round a video frame count down to the nearest valid ``4k + 1``.
+    """Round down to H3's reference-video grid: 5, 22, 39, ... (17k+5).
 
-    MiniMax H3's video VAE is causal: it compresses time in groups of 4 with
-    one leading keyframe, so it only accepts pixel-frame counts of the form
-    4k+1 (1, 5, 9, 13, 17, ...). Anything else makes its internal temporal
-    chunker produce a zero-length chunk list and crash on
-    ``torch.cat(): expected a non-empty list of Tensors``. The official
-    ref2video path already trims to this grid before encoding; RefMod
-    extraction previously didn't, so an arbitrary frame_load_cap/
-    select_every_nth combo from a video loader would break it.
+    The VAE encodes 17-frame chunks, pads the final chunk and drops three
+    trailing latent tokens. Its effective video grid is not the encoder's
+    standalone 4x temporal stride. RefMod keeps its single-image fallback
+    when fewer than five frames are selected.
     """
-    if n_frames <= 1:
+    if n_frames < 1:
+        raise ValueError("A reference must contain at least one frame.")
+    if n_frames < 5:
         return 1
-    return ((n_frames - 1) // 4) * 4 + 1
+    return ((n_frames - 5) // 17) * 17 + 5
+
+
+def sample_video_for_vae(frames: torch.Tensor, max_frames: Optional[int] = None) -> torch.Tensor:
+    """Sample the full clip onto H3's grid without exceeding the frame cap.
+
+    Keep both endpoints whenever the selected count is greater than one.
+    Already-aligned clips are returned unchanged. A cap/input shorter than
+    five frames selects only the first image, using H3's still-image path.
+    """
+    if max_frames is not None and max_frames < 1:
+        raise ValueError("max_frames must be at least 1.")
+    count = snap_to_causal_grid(min(frames.shape[0], max_frames)
+                                if max_frames is not None else frames.shape[0])
+    if count == frames.shape[0]:
+        return frames
+    indices = torch.linspace(0, frames.shape[0] - 1, count, device=frames.device).round().long()
+    return frames[indices]
 
 
 

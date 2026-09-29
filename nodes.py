@@ -62,7 +62,7 @@ from .common import (
     refmods_dir,
     mod_output_path,
     resize_ref as _resize_ref,
-    snap_to_causal_grid as _snap_to_causal_grid,
+    sample_video_for_vae as _sample_video_for_vae,
     ensure_min_size as _ensure_min_size,
 )
 from . import continuum_bridge
@@ -1678,9 +1678,9 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                     tooltip="Pooled mode: grid width (long edge if the source is wider than tall)."),
                 io.Int.Input("latent_frames", default=16, min=1, max=2147483647,
                     tooltip="Per-video temporal limit. Encode mode samples up to this many source frames "
-                            "on the causal 4k+1 grid before VAE encoding (16 selects 13 across the clip); training mode pools to "
-                            "up to this many latent frames after encoding. Set at least the source "
-                            "frame count to avoid encode-mode sampling. Images use 1. Higher values "
+                            "on H3's 17k+5 grid before VAE encoding (5, 22, 39...; 16 selects 5 across the clip; below 5 selects the first image); training mode pools to "
+                            "up to this many latent frames after encoding. Aligned clips remain unchanged "
+                            "when the limit is at least their frame count. Images use 1. Higher values "
                             "increase memory and token cost; max_tokens can still reduce the result."),
                 io.Int.Input("identity", display_name="Refinement Steps", default=500, min=0, max=2000, step=50,
                     tooltip="Compressed Reference only: optimization steps to reduce latent reconstruction "
@@ -1905,12 +1905,8 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
             if mode == "encode":
                 # downscale (never upscale) to the target short edge, sample
                 # videos to latent_frames frames, then encode at full res
-                if is_video and latent_frames < src.shape[0]:
-                    # Snap the count before sampling so causal trimming cannot
-                    # discard the end of the sampled motion sequence.
-                    count = _snap_to_causal_grid(latent_frames)
-                    idx = torch.linspace(0, src.shape[0] - 1, count, device=src.device).round().long()
-                    src = src[idx]
+                if is_video:
+                    src = _sample_video_for_vae(src, latent_frames)
                 src = _resize_ref(src, ref_resolution, canvas)
             else:
                 # training mode: encode smaller too — the latent is pooled
@@ -1942,12 +1938,12 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                 motion_warned = True
             src = _ensure_min_size(src)
             if is_video and src.shape[0] > 1:
-                valid_t = _snap_to_causal_grid(src.shape[0])
-                if valid_t != src.shape[0]:
+                aligned = _sample_video_for_vae(src)
+                if aligned.shape[0] != src.shape[0]:
                     print(f"[MiniMaxH3RefModExtract] reference {src_idx + 1} "
-                          f"(video): trimming {src.shape[0]} -> {valid_t} frames "
-                          f"to match the VAE's causal 4k+1 grid.")
-                    src = src[:valid_t]
+                          f"(video): sampling {src.shape[0]} -> {aligned.shape[0]} frames "
+                          f"on H3's 17k+5 grid (short clips use the first image).")
+                src = aligned
             mask_px = None
             if masks is not None:
                 mask_px = _resize_mask(masks[src_idx], src.shape[1], src.shape[2],
