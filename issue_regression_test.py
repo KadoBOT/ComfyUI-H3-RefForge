@@ -141,8 +141,9 @@ class IssueRegressions(unittest.TestCase):
         seen = []
         def encode(pixels):
             seen.append(pixels[:,0,0,0].clone())
-            return torch.ones(1,24,(pixels.shape[0]-1)//4+1,4,4)
-        for limit, expected in ((16,13),(17,17),(1,1),(101,101)):
+            n = pixels.shape[0]
+            return torch.ones(1,24,1 if n == 1 else (n-5)//17*5+2,4,4)
+        for limit, expected in ((16,5),(17,5),(22,22),(39,39),(1,1),(4,1),(101,90)):
             N.MiniMaxH3RefModExtract.execute(
                 "motion", mode="encode", refs_video={"ref_video_0":clip},
                 vae=types.SimpleNamespace(encode=encode), latent_frames=limit, save=False)
@@ -150,6 +151,58 @@ class IssueRegressions(unittest.TestCase):
             self.assertEqual(seen[-1][0].item(), 0)
             if expected > 1:
                 self.assertEqual(seen[-1][-1].item(), 1)
+
+    def test_valid_22_frame_reference_reaches_vae_without_trimming(self):
+        clip = torch.arange(22).reshape(22,1,1,1).expand(-1,32,32,3).float() / 21
+        seen = []
+        vae = types.SimpleNamespace(encode=lambda pixels:
+            seen.append(pixels.clone()) or torch.ones(1,24,7,4,4))
+        # Isolate temporal policy from image-resize quantization.
+        with patch.object(N, '_resize_ref', side_effect=lambda src,*a:src), \
+                patch.object(N, '_ensure_min_size', side_effect=lambda src:src):
+            for mode in ('encode', 'training'):
+                N.MiniMaxH3RefModExtract.execute(
+                    'aligned', mode=mode, refs_video={'ref_video_0':clip},
+                    vae=vae, latent_frames=22, identity=0, save=False)
+                self.assertTrue(torch.equal(seen[-1], clip))
+
+    def test_motion_only_realigns_differences_and_keeps_last_motion(self):
+        clip = torch.linspace(0,1,23).square().reshape(23,1,1,1).expand(-1,32,32,3)
+        seen = []
+        vae = types.SimpleNamespace(encode=lambda pixels:
+            seen.append(pixels.clone()) or torch.ones(1,24,7,4,4))
+        with patch.object(N, '_resize_ref', side_effect=lambda src,*a:src), \
+                patch.object(N, '_ensure_min_size', side_effect=lambda src:src):
+            N.MiniMaxH3RefModExtract.execute(
+                'motion', mode='training', refs_video={'ref_video_0':clip},
+                vae=vae, latent_frames=2, identity=0, motion_only=True, save=False)
+        expected = (clip[1:]-clip[:-1]).abs()
+        expected /= expected.max()
+        self.assertTrue(torch.equal(seen[-1], expected))
+
+    def test_cli_samples_the_same_frames_as_the_node_helper(self):
+        sys.path.insert(0, str(ROOT))
+        self.addCleanup(sys.path.remove, str(ROOT))
+        cli = importlib.import_module('extract_mod')
+        import comfy.sd
+        import comfy.utils
+        clip = torch.arange(101).reshape(101,1,1,1).expand(-1,32,32,3).float()/100
+        seen = []
+        vae = types.SimpleNamespace(throw_exception_if_invalid=lambda:None,
+            encode=lambda pixels:seen.append(pixels.clone()) or torch.ones(1,24,7,4,4))
+        with patch.object(cli, '_load_video', return_value=clip), \
+                patch.object(cli, '_resize_ref', side_effect=lambda src,*a:src), \
+                patch.object(cli, 'ensure_min_size', side_effect=lambda src:src), \
+                patch.object(comfy.sd, 'VAE', return_value=vae), \
+                patch.object(comfy.utils, 'load_torch_file', return_value=({},{})):
+            for mode, limit in (('encode',16),('encode',22),('training',2)):
+                argv = ['extract_mod.py','--video','test.mp4','--vae','stub.safetensors',
+                        '--device','cpu','--mode',mode,'--latent-frames',str(limit),
+                        '--identity','0','--output',str(self.root),'--name','cli']
+                with patch.object(sys, 'argv', argv):
+                    cli.main()
+                expected = COMMON.sample_video_for_vae(clip,limit if mode=='encode' else None)
+                self.assertTrue(torch.equal(seen[-1], expected))
 
 
 if __name__ == "__main__":

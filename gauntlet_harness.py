@@ -13,6 +13,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from core import optimize_latent_multi
 
 
+def synchronize(device):
+    device = torch.device(device)
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    elif device.type == "mps":
+        torch.mps.synchronize()
+
+
 def run():
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -22,6 +30,7 @@ def run():
     parser.add_argument("--steps", type=int, default=20)
     parser.add_argument("--output", default="tests/gauntlet_result.json")
     args = parser.parse_args()
+    device = torch.device(args.device)
     torch.manual_seed(123)
     initial = torch.randn(1,24,2,8,8)
     targets = [torch.randn(1,24,args.frames,args.edge,args.edge) for _ in range(args.refs)]
@@ -30,15 +39,15 @@ def run():
     results, baseline = [], None
     for strategy in ("resident", "stream", "grouped"):
         gc.collect()
-        if args.device == "cuda":
+        if device.type == "cuda":
             torch.cuda.empty_cache()
-            torch.cuda.reset_peak_memory_stats()
-            torch.cuda.synchronize()
+            torch.cuda.reset_peak_memory_stats(device)
+        synchronize(device)
         start = time.perf_counter()
         value = optimize_latent_multi(initial, targets, steps=args.steps, device=args.device, strategy=strategy)
-        if args.device == "cuda": torch.cuda.synchronize()
+        synchronize(device)
         elapsed = time.perf_counter() - start
-        peak = torch.cuda.max_memory_allocated()/1024**2 if args.device == "cuda" else None
+        peak = torch.cuda.max_memory_allocated(device)/1024**2 if device.type == "cuda" else None
         value = value.cpu()
         if baseline is None: baseline = value
         error = (value-baseline).abs().max().item()

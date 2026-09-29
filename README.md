@@ -130,8 +130,9 @@ a candy racer in a karting scene.
    git clone https://github.com/Luisacaotica/ComfyUI-MiniMaxH3Mod custom_nodes/ComfyUI-MiniMaxH3Mod
    ```
 
-Tested on Windows; `os.path`-based paths so it should work on Linux/Mac, but
-only Windows has been exercised so far.
+Originally tested on Windows. Bounded [Apple Silicon checks](#apple-silicon)
+also cover preprocessing and the real H3 VAE on M5 Ultra, macOS 27 and
+PyTorch 2.14; they do not qualify every workflow or reference quality.
 
 Visual creation also offers `budget_policy`: `truncate` (the default) uses
 existing frame reduction to fit `max_tokens`; `error` stops before saving if
@@ -789,10 +790,17 @@ settings, not validated optimal settings or a guarantee of motion fidelity.
 
 For longer video references, increase `latent_frames` and the token budget
 together. In `encode`, `latent_frames` limits sampled **source frames** before
-the VAE's temporal compression. When sampling, the count is snapped down to
-4k+1 first (16 becomes 13), then sampled across the full clip, including its
-last frame when more than one frame survives. Set the limit at least to
-the source frame count to avoid that sampling. In `training`, it limits the
+the VAE's temporal compression. The count is snapped down to H3's **17k+5**
+video grid (5, 22, 39, ...), then sampled across the full clip, including its
+last frame when more than one frame survives. For example, a limit of 16
+selects 5 frames; a limit of 22 preserves all 22 frames of a 22-frame clip.
+A source or limit below 5 uses only the first image, retaining RefMod's
+still-image fallback. Already-aligned clips at or below the limit are unchanged.
+The same grid applies before compressed-mode encoding and in the CLI;
+motion-only differences are aligned after they are calculated. Uniform
+sampling preserves the endpoints but changes the temporal spacing: it does
+not preserve original timestamps or synchronize a separate soundtrack.
+In `training`, `latent_frames` limits the
 **latent frames** retained after encoding. It is not a duration in seconds.
 `max_tokens=0` disables the extraction token cap; loader/Apply/bridge budgets
 are separate. Higher values increase memory and attention cost and do not
@@ -831,6 +839,32 @@ Other options include `--pool-w`, `--max-tokens`, `--multiplier`, `--subfolder`,
 Files use embedded metadata; legacy JSON sidecars remain supported.
 
 ## Validation and experimental training status
+
+### Apple Silicon
+
+RefMod uses native ComfyUI H3 models and ordinary PyTorch operations. Visual
+pooling and strength blurring explicitly use CPU for MPS-resident latents,
+then return the result to the original device and dtype. This covers GPU-only
+intermediates without requiring `PYTORCH_ENABLE_MPS_FALLBACK=1`. CPU and CUDA
+paths retain their existing arithmetic; model/VAE execution can still use MPS.
+The transfers add preprocessing work for GPU-resident references, rather than
+moving diffusion inference to CPU.
+
+Run `PYTORCH_ENABLE_MPS_FALLBACK=0 python -m unittest compatibility_regression_test -v`
+with ComfyUI's Python for the frame-grid, CPU/MPS pooling, blur, gradient and
+timing-backend checks. MPS tests skip on other platforms. A checkout outside
+ComfyUI needs its ComfyUI directory on `PYTHONPATH`. The existing
+`python issue_regression_test.py` also checks node/CLI frame selection.
+`python gauntlet_harness.py --device mps --output gauntlet_mps.json` synchronizes
+MPS before and after each timed refinement. Its CUDA memory field remains null
+on MPS; it is not an Apple GPU peak-memory measurement.
+
+The corrected video grid changes newly extracted video RefMods that previously
+used 4k+1 sampling/trimming. Existing saved RefMods remain readable, but must be
+re-extracted to recover source frames that were discarded. These compatibility
+fixes are not a claim of improved identity, motion or voice quality.
+
+### Other validation
 
 Run production regressions with `python -m unittest discover -s tests -v`.
 The suite covers loaders/queue validation, storage, caches, curves, bridge,

@@ -86,6 +86,11 @@ def _blur_latent(z: torch.Tensor, factor: int = 8) -> torch.Tensor:
     manifold (smooth, plausible) while still discarding detail as strength
     drops, which is what "weaker reference" should actually look like.
     """
+    if z.device.type == "mps":
+        # MPS lacks adaptive_avg_pool3d (and some non-divisible pooling
+        # shapes). Keep this small preprocessing chain on CPU explicitly,
+        # then restore the caller's device; global MPS fallback is not needed.
+        return _blur_latent(z.cpu(), factor).to(z.device)
     if z.dim() == 4:
         b, c, stereo, t = z.shape
         if t <= 1:
@@ -182,10 +187,11 @@ def pool_latent(
         return z
     if latent_h % 2 != 0 or latent_w % 2 != 0:
         raise ValueError(f"pool_h/pool_w must be even (got {latent_h}x{latent_w})")
-    pooled = F.adaptive_avg_pool3d(
-        z.float(), (latent_t, latent_h, latent_w)
-    )
-    return pooled.to(z.dtype)
+    # Normal ComfyUI intermediates are already on CPU. GPU-only workflows can
+    # supply MPS latents, where adaptive_avg_pool3d is not implemented.
+    work = z.cpu() if z.device.type == "mps" else z
+    pooled = F.adaptive_avg_pool3d(work.float(), (latent_t, latent_h, latent_w))
+    return pooled.to(device=z.device, dtype=z.dtype)
 
 
 def optimize_latent(
