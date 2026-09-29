@@ -26,8 +26,14 @@ def encode_audio(vae, audio, max_seconds=30.0, chunk_seconds=10.0):
     if waveform.shape[1] == 1:
         waveform = waveform.repeat(1, 2, 1)
     if sample_rate != 32000:
-        import torchaudio
-        waveform = torchaudio.functional.resample(waveform, sample_rate, 32000)
+        try:
+            from comfy.audio import resample
+        except ModuleNotFoundError as exc:
+            if exc.name != "comfy.audio":
+                raise
+            # ComfyUI versions before the torchaudio removal lack comfy.audio.
+            from torchaudio.functional import resample
+        waveform = resample(waveform, sample_rate, 32000)
     model_management.load_models_gpu([vae.patcher], memory_required=0, force_full_load=True)
     chunk = max(800, round(chunk_seconds * 40) * 800)
     latents = []

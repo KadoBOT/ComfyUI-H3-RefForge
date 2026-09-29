@@ -20,7 +20,9 @@ export function installRefModSlots(nodeType) {
         nodeType.prototype[method] = function(...args) {
             const state = this._refmodSlots;
             if (!state) return original?.apply(this, args);
-            const displayOrder = this.widgets;
+            // Nodes 2.0 exposes a stable array view: assigning widgets mutates
+            // that same view, so retain a snapshot rather than its reference.
+            const displayOrder = [...this.widgets];
             state.schemaOrderDepth++;
             this.widgets = [...state.originals, ...displayOrder.filter(w => !state.originals.includes(w))];
             try {
@@ -65,17 +67,19 @@ function setupSlots(node) {
 
     function show(widget, visible) {
         if (!visible && !hidden.has(widget)) {
-            hidden.set(widget, {type: widget.type, computeSize: widget.computeSize,
-                draw: widget.draw, mouse: widget.mouse, hidden: widget.hidden});
-            widget.type = "converted-widget";
+            hidden.set(widget, {computeSize: widget.computeSize,
+                draw: widget.draw, mouse: widget.mouse, hidden: widget.hidden,
+                optionsHidden: widget.options?.hidden});
+            // converted-widget means a socket row in Nodes 2.0, not a hidden
+            // widget. Its empty row was responsible for the large gaps.
+            widget.options = {...widget.options, hidden: true};
             widget.computeSize = () => [0, -4];
             widget.draw = () => {};
             widget.mouse = () => false;
             widget.hidden = true;
         } else if (visible && hidden.has(widget)) {
             const saved = hidden.get(widget);
-            // Existing converted widgets keep their own socket-only layout.
-            if (widget.type === "converted-widget") widget.type = saved.type;
+            widget.options = {...widget.options, hidden: saved.optionsHidden};
             widget.computeSize = saved.computeSize;
             widget.draw = saved.draw;
             widget.mouse = saved.mouse;
@@ -101,19 +105,20 @@ function setupSlots(node) {
         node.properties.refmod_visible_slots = [...visible].sort((a, b) => a - b);
         const grouped = [...groups.values()].flat();
         const extras = node.widgets.filter(w => !originals.includes(w) && ![...removers.values(), add].includes(w));
-        node.widgets = [];
+        const displayOrder = [];
         for (const slot of slots) {
             for (const widget of groups.get(slot)) {
                 show(widget, visible.has(slot));
-                node.widgets.push(widget);
+                displayOrder.push(widget);
             }
             const remove = removers.get(slot);
             remove.disabled = !!linked(slot);
             show(remove, visible.has(slot));
-            node.widgets.push(remove);
+            displayOrder.push(remove);
         }
         show(add, visible.size < slots.length);
-        node.widgets.push(add, ...originals.filter(w => !grouped.includes(w)), ...extras);
+        displayOrder.push(add, ...originals.filter(w => !grouped.includes(w)), ...extras);
+        node.widgets = displayOrder;
         node.setSize?.([node.size[0], node.computeSize()[1]]);
         node.setDirtyCanvas?.(true, true);
     }

@@ -1,0 +1,23 @@
+{
+  "properties": {"refmod_visible_slots": [1, 8]},
+  "widgets_values": [
+    false,
+    "characters/alice", 0.73, 2,
+    "(none)", 1, 1,
+    "(none)", 1, 1,
+    "(none)", 1, 1,
+    "(none)", 1, 1,
+    "(none)", 1, 1,
+    "(none)", 1, 1,
+    "motion/walk", 0.6, 1,
+    8192,
+    "Visual", 0.85, 0.25,
+    "All", 1, 1,
+    "All", 1, 1,
+    "All", 1, 1,
+    "All", 1, 1,
+    "All", 1, 1,
+    "All", 1, 1,
+    "All", 1, 0.4
+  ]
+}

@@ -290,6 +290,41 @@ safetensors roundtrip and native H3 reference layout without loading the DiT.
 
 ## File format, resolution and token budget
 
+### How many references should I encode?
+
+There is no validated optimum image count or clip duration. As a practical
+starting experiment, use 5–10 distinct, clear images of the same subject,
+one short video that shows the desired motion, or 5–15 seconds of clean audio.
+These are starting points, not enforced limits or measured quality optima.
+Compare against a smaller set with the same generation settings before adding
+more. Duplicate or conflicting examples can add cost without useful detail.
+
+Check what actually survives extraction:
+
+- **Images:** Folder Loader defaults to `max_items=32`, so a folder containing
+  40 images is not fully loaded unless you raise that limit. The creator's
+  default stack mode stores images along one temporal axis; it does not train
+  a character model. More inputs can trigger the visual token cap and discard
+  frames. Inspect the saved shape and token count.
+- **Video:** Folder Loader's `max_frames` and the creator's `latent_frames`
+  both affect the sequence. Full Reference limits source frames; Compressed
+  Reference limits latent frames after VAE encoding. Frame reduction can lose
+  motion and timing. Start with one relevant short clip and inspect its preview.
+- **Audio:** `max_seconds` (Master: `audio_max_seconds`) defaults to 30 and
+  selects the **beginning** of the input. A two-minute file therefore does not
+  mean two minutes were encoded. Audio uses about **80 tokens/second**: 15s is
+  about 1,200 tokens, 30s about 2,400, and 120s about 9,600. Keeping all 120s
+  requires raising the duration limit and the default 5,120-token budget
+  (or disabling that budget with 0). The default overflow policy is an error;
+  `truncate` keeps only a prefix. Longer input is not guaranteed to improve voice
+  similarity and raises sampling attention cost.
+
+Small saved files and chunked encoding do not make reference conditioning free.
+Generation cost depends on the retained tokens across all active references,
+including copies. Use Inspect H3 RefMod to check the actual total before raising
+budgets. Loader, Apply and bridge `max_total_tokens` limits are separate from
+extraction limits.
+
 Standalone files contain a latent and JSON metadata in the safetensors header.
 Visual latents have shape `[1,24,T,H,W]`; audio latents use `[1,32,2,T]`.
 Version-5 bundles contain an ordered list of these references in one file;
