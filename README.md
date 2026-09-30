@@ -11,6 +11,26 @@ fork or the original, not both: they register the same nodes.
 
 Support the original author: [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/C0C2EV9GW)
 
+## What's new — v0.3.0
+
+- **Compressed References are grid-sized encodes** — each reference is resized
+  to the latent grid (16 px per cell) and VAE-encoded, replacing the pooled and
+  refined latent. On 10 test images decoded with the H3 VAE, mean PSNR is
+  1.9–6.7 dB higher at the same token count, and a 24-cell grid (about 100
+  tokens) beats 0.2.6's 48-cell grid (about 400 tokens) on every image.
+- **Faster extraction** — no full-resolution encode or 500-step refinement:
+  0.01–0.3 s instead of 0.5–2.2 s per image and 33–44 s per test clip.
+- **Videos are sampled before encoding** — `latent_frames=16` stores 12 real
+  latent frames instead of 16 time-pooled ones, and scores higher on both clips.
+- **Budgets keep every reference** — with `max_tokens` and `truncate`, an image
+  stack's grid shrinks before encoding instead of whole references being dropped.
+- **Previews and Qwen see the stored reference** — single-frame latents decode
+  as two-frame clips; the H3 VAE reconstructs a lone latent about 10 dB worse.
+
+**Refinement Steps** is unused and kept for workflow compatibility. Mods saved
+by 0.2.x load unchanged; create them again to benefit. Measurements, rejected
+alternatives and open gaps: [AUDIT.md](AUDIT.md).
+
 ## What's new — v0.2.6
 
 - **Standalone creators** — Create H3 RefMod and Master now run without a
@@ -99,8 +119,9 @@ the bundle to **Apply H3 RefMod**. **Create H3 RefMod Master** brings visual
 and audio extraction into one node.
 
 Extraction uses the corresponding VAE. It does not train H3 weights or require
-the diffusion model. The visual mode named `training` refines a compressed
-latent; it is not LoRA training or supervised concept learning.
+the diffusion model. The visual mode named `training` stores the VAE encode of
+a downscaled copy; despite its name it is not LoRA training or supervised
+concept learning.
 
 Saving avoids re-encoding the source on each run. Compression can reduce the
 number of reference tokens processed during generation, at the cost of lost
@@ -140,8 +161,10 @@ Originally tested on Windows. Bounded [Apple Silicon checks](#apple-silicon)
 also cover preprocessing and the real H3 VAE on M5 Ultra, macOS 27 and
 PyTorch 2.14; they do not qualify every workflow or reference quality.
 
-Visual creation also offers `budget_policy`: `truncate` (the default) uses
-existing frame reduction to fit `max_tokens`; `error` stops before saving if
+Visual creation also offers `budget_policy`: `truncate` (the default) fits
+`max_tokens` by shrinking an image-only stack's grid before encoding (every
+reference is kept), or by dropping near-duplicate and resampling video frames;
+`error` stops before saving if
 the combined visual latent exceeds the budget after the multiplier. This applies
 to both Create and Master. `max_tokens=0` disables the cap. Master's audio policy
 and combined budget remain separate.
@@ -153,14 +176,15 @@ and which values a preset replaces. Apply reports actual curve/retention overrid
 and inactive scrambling controls. These are execution-time notices; widgets remain
 visible and editable, and cached nodes do not rerun just to print a notice.
 The preset tooltip lists exact assignments. `motion_sequence` preserves the frame
-limit and Refinement Steps and disables frame-difference extraction (`motion_only`)
+limit and disables frame-difference extraction (`motion_only`)
 to retain the visual sequence. `concept_type` is metadata, not an algorithm selector.
 On Apply, `curve_shape` still matters with `constant` for non-linear shapes; a missing
 saved override does not disable manual controls or discard a valid graph preset.
 
 The UI calls the modes **Full Reference** (`encode` internally) and
-**Compressed Reference** (`training` internally). **Refinement Steps** retains
-its historical input ID `identity`. Saved files and API workflows keep these
+**Compressed Reference** (`training` internally). **Refinement Steps (unused)**
+keeps its historical input ID `identity` and no longer affects extraction.
+Saved files and API workflows keep these
 internal identifiers; the descriptions below use them when discussing code.
 Node titles now use **Create** instead of **Extract**, with unchanged node IDs.
 
@@ -172,13 +196,15 @@ processing, sampling and other references can differ.
 | Visual mode | Operation | Tradeoff |
 | --- | --- | --- |
 | `encode` | Resize/preprocess and store the VAE encode | Keeps more reference detail; larger token cost. Useful as the baseline for identity comparisons. |
-| `training` | Pool the latent, then optionally refine it against the original VAE latent | Fewer tokens; detail and motion may be lost. |
+| `training` | Resize the ref to the latent grid (16 px per cell) and store its VAE encode | Fewer tokens; fine detail and motion may be lost. |
 
-The `training` loss is MSE between the full latent and a trilinearly enlarged
-small latent. Only the small latent is optimized. No DiT, text instruction,
-identity recognizer or motion objective participates. `identity` is the number
-of refinement steps, despite its historical name; 0 means pooling only.
-Increasing it does not teach the model which attribute to preserve or discard.
+A Compressed Reference is a real encode of a low-resolution copy. The grid
+follows the first source's aspect ratio and never exceeds the source's own
+16 px cells or `ref_resolution`; other refs are center-cropped to it. No DiT,
+text instruction, identity recognizer or motion objective participates.
+0.2.x pooled a full-resolution latent and refined it against that latent;
+decoded, the new path is closer to the source at every tested grid, at the
+same or lower token cost. See [AUDIT.md](AUDIT.md).
 
 `concept_type` is descriptive metadata, not a separate learning algorithm.
 The aliases `full` → `encode` and `pooled` → `training` remain supported.
@@ -277,8 +303,9 @@ preview after the stored preview. This shows stored information, not a
 prediction of generated identity/style quality.
 
 `max_total_tokens` on loaders/Apply/bridge limits the sum after copies
-(0 disables it). Oversized bundles fail explicitly. Extraction also fails
-when one frame alone exceeds its cap. Loaded-file cache checks file and
+(0 disables it). Oversized bundles fail explicitly. During extraction with
+`truncate`, a frame larger than the cap is shrunk to fit before encoding;
+`error` fails instead. Loaded-file cache checks file and
 sidecar changes, and is bounded to 256 MiB and 24 entries.
 
 Visual Extract offers opt-in presets: `manual` preserves current widgets;
@@ -288,12 +315,10 @@ These are starting settings, not quality guarantees or semantic disentanglement.
 Both visual and audio Extract support an optional save subfolder.
 
 Validation: `python -m unittest discover -s tests -v` runs production-code
-regressions. `python gauntlet_harness.py --device cuda` compares resident,
-streaming and grouped multi-ref refinement with numerical parity checks.
-`python issue_regression_test.py` checks standalone creators, different-size
-mask lists and video sampling without loading model weights.
-`python tests/audio_smoke.py PATH_TO_H3_AUDIO_VAE` exercises the real codec,
-safetensors roundtrip and native H3 reference layout without loading the DiT.
+regressions. `python issue_regression_test.py` checks standalone creators,
+different-size mask lists, video sampling, grid encoding and budgets without
+loading model weights. `python fidelity_bench.py --vae PATH --image ... --video ...`
+compares 0.2.6 and current Compressed Reference extraction on the real H3 VAE.
 
 ## File format, resolution and token budget
 
@@ -315,7 +340,8 @@ Check what actually survives extraction:
   frames. Inspect the saved shape and token count.
 - **Video:** Folder Loader's `max_frames` and the creator's `latent_frames`
   both affect the sequence. Full Reference limits source frames; Compressed
-  Reference limits latent frames after VAE encoding. Frame reduction can lose
+  Reference samples frames so the encode has at most `latent_frames` latent
+  frames. Frame reduction can lose
   motion and timing. Start with one relevant short clip and inspect its preview.
 - **Audio:** `max_seconds` (Master: `audio_max_seconds`) defaults to 30 and
   selects the **beginning** of the input. A two-minute file therefore does not
@@ -374,7 +400,7 @@ uses the explicit error/prefix-truncation policy described above.
 | --- | --- |
 | H3 RefMod Text Encode | Encode a prompt with numbered saved references; outputs conditioning and the reference map. |
 | Create H3 RefMod Master | Visual and/or audio extraction into one bundle, with separate VAE inputs. |
-| Create H3 RefMod | Visual extraction, masks, compression and optional refinement. |
+| Create H3 RefMod | Visual extraction, masks and compression. |
 | Collect H3 RefMod Masks | Pack a MASK list or batch without resizing; connect to the creator's `mask_list`. |
 | Create H3 Audio RefMod | Audio extraction with duration and token limits. |
 | Save H3 RefMods | Save a bundle as an output node; no downstream connection required. |
@@ -424,7 +450,8 @@ is a trigger, and `<Subject n>` is not automatically bound to a loader slot.
 
 Visual presentation requires decoding the stored latent for Qwen; it adds VAE and
 vision-encoder work. Compressed latents reconstruct less detail than the original
-photos. Videos are decoded and then sampled for Qwen at 2 fps; `reference_fps`
+photos. A single-frame latent is decoded as a two-frame clip and its first frame
+kept, which the H3 VAE reconstructs far better than a lone latent. Videos are decoded and then sampled for Qwen at 2 fps; `reference_fps`
 sets reconstructed playback timing (default 24). Original timing is not recovered
 from pooled or stacked refs. Audio presentation uses the native numbered label
 without decoding audio. Loader strengths affect the latents; saved Apply curves
@@ -612,7 +639,7 @@ same `retention` master control.
    Image slots use the first image of a batch; video slots preserve a sequence.
 2. Choose a name and optional subfolder. For a visual baseline, compare `encode`
    against `training` using the same refs and generation settings. The visual
-   node defaults are `training`, 16×16 grid, `latent_frames=16`, `identity=500`,
+   node defaults are `training`, 16×16 grid, `latent_frames=16`,
    `ref_resolution=1024`, and `max_tokens=5120`; presets can override some of them.
 3. Connect the output bundle directly to **Apply H3 RefMod**, or load the saved
    file(s) with **Load H3 RefMods**. Connect your H3 conditioning to Apply and
@@ -696,8 +723,8 @@ the preview text:
 
 ### Pool-size examples
 
-Observed results with 8×8 and 16×16 pools. These examples do not establish
-a universal concept/identity split:
+Observed results with 8×8 and 16×16 pools, made with 0.2.x pooling. These
+examples do not establish a universal concept/identity split:
 
 ![Concept pool 8x8 — with and without the mod](examples/concept_example_with_without_comparission.gif)
 
@@ -754,19 +781,15 @@ caps the item count and `max_frames` caps the number of sampled video frames.
 
 By default, visual refs are encoded separately and stacked along the latent
 time axis. A video contributes a sequence, not just one frame. Spatial resizing,
-temporal pooling/sampling and the token cap can still discard information.
-In encode mode, multiple refs use a common canvas based on the first source;
-other aspect ratios can be center-cropped to fit it.
+temporal sampling and the token cap can still discard information.
+In both modes, multiple refs use a common canvas based on the first source;
+other aspect ratios are center-cropped to fit it.
 
-With `merge=True` in training mode, one grid minimizes mean reconstruction
-error across targets. For equal target shapes, this has the same gradient as
-reconstructing their average. That is not semantic discovery of what the
-examples share: misaligned faces, motion and backgrounds can average into blur.
-Compare merge against stacking rather than assuming it removes unwanted content.
-
-The current refinement groups same-shaped targets on CPU and processes gradient
-contributions sequentially. This reduces repeated work; it does not change the
-objective into DreamBooth, Textual Inversion or control/target edit training.
+With `merge=True` in training mode, the refs' grid encodes are averaged into
+one latent; refs with fewer latent frames are stretched in time to the longest.
+That is not semantic discovery of what the examples share: misaligned faces,
+motion and backgrounds can average into blur. Compare merge against stacking
+rather than assuming it removes unwanted content.
 
 ### Motion-only extraction (experimental)
 
@@ -776,7 +799,7 @@ Full Reference, `multiplier=1`, `max_tokens=0` (or an adequate budget with
 `curve_direction=constant`, `curve_shape=linear`, `curve_value=1`, no preset
 override, and `scramble_seed=-1`. A constant linear curve at **0** replaces
 every reference frame with its blurred version; it does not disable the curve.
-Spatial pooling and Refinement Steps do not affect Full Reference mode.
+The grid does not affect Full Reference mode.
 
 Use a **Ref2VA checkpoint and reference workflow** for this comparison.
 [MiniMax's model card](https://huggingface.co/MiniMaxAI/MiniMax-H3#model-variants-and-input-specifications)
@@ -802,12 +825,14 @@ last frame when more than one frame survives. For example, a limit of 16
 selects 5 frames; a limit of 22 preserves all 22 frames of a 22-frame clip.
 A source or limit below 5 uses only the first image, retaining RefMod's
 still-image fallback. Already-aligned clips at or below the limit are unchanged.
-The same grid applies before compressed-mode encoding and in the CLI;
-motion-only differences are aligned after they are calculated. Uniform
-sampling preserves the endpoints but changes the temporal spacing: it does
-not preserve original timestamps or synchronize a separate soundtrack.
-In `training`, `latent_frames` limits the
-**latent frames** retained after encoding. It is not a duration in seconds.
+The CLI runs the same code. Uniform sampling preserves the endpoints but
+changes the temporal spacing: it does not preserve original timestamps or
+synchronize a separate soundtrack.
+In `training`, `latent_frames` caps the **latent frames** of the encode: the
+clip is sampled to the largest 17k+5 count that fits (2 → 5 frames, 7 → 22,
+16 → 39 frames = 12 latent frames) before it is resized and encoded;
+motion-only differences are taken at the source frame rate first. It is not
+a duration in seconds.
 `max_tokens=0` disables the extraction token cap; loader/Apply/bridge budgets
 are separate. Higher values increase memory and attention cost and do not
 guarantee faithful motion transfer.
@@ -836,7 +861,7 @@ python custom_nodes/ComfyUI-H3-RefForge/extract_mod.py \
 # Compressed video reference; evaluate motion loss against encode
 python custom_nodes/ComfyUI-H3-RefForge/extract_mod.py \
     --video dance.mp4 --vae path/to/h3_video_vae.safetensors \
-    --name dance --mode training --pool 16 --latent-frames 16 --identity 500
+    --name dance --mode training --pool 16 --latent-frames 16
 ```
 
 Other options include `--pool-w`, `--max-tokens`, `--multiplier`, `--subfolder`,
@@ -857,13 +882,10 @@ The transfers add preprocessing work for GPU-resident references, rather than
 moving diffusion inference to CPU.
 
 Run `PYTORCH_ENABLE_MPS_FALLBACK=0 python -m unittest compatibility_regression_test -v`
-with ComfyUI's Python for the frame-grid, CPU/MPS pooling, blur, gradient and
-timing-backend checks. MPS tests skip on other platforms. A checkout outside
+with ComfyUI's Python for the frame-grid, grid-fit, resize, CPU/MPS pooling,
+blur and gradient checks. MPS tests skip on other platforms. A checkout outside
 ComfyUI needs its ComfyUI directory on `PYTHONPATH`. The existing
 `python issue_regression_test.py` also checks node/CLI frame selection.
-`python gauntlet_harness.py --device mps --output gauntlet_mps.json` synchronizes
-MPS before and after each timed refinement. Its CUDA memory field remains null
-on MPS; it is not an Apple GPU peak-memory measurement.
 
 The corrected video grid changes newly extracted video RefMods that previously
 used 4k+1 sampling/trimming. Existing saved RefMods remain readable, but must be
@@ -877,12 +899,10 @@ The suite covers loaders/queue validation, storage, caches, curves, bridge,
 Master orchestration and audio storage. Codec checks used a real audio VAE;
 these are not full H3 voice/visual quality evaluations.
 
-`gauntlet_harness.py` compares three implementations of the existing model-free
-MSE refinement. `tests/h3_gradient_probe.py` is a separate gradient-feasibility
-experiment with a small randomly initialized H3 architecture. Its success does
-not establish compatibility with a full INT8/ConvRot checkpoint, memory fit,
-concept learning or edit quality. A train-through-H3 ComfyUI node is not yet
-implemented. See [REVIEW_FOLLOWUP.md](REVIEW_FOLLOWUP.md) for recorded results.
+`fidelity_bench.py` decodes old and new Compressed References with the real H3
+video VAE and scores them against their source. Decoded fidelity is a proxy for
+what the DiT can recover, not a generation benchmark; see [AUDIT.md](AUDIT.md).
+A train-through-H3 ComfyUI node is not implemented.
 
 ## License
 

@@ -3,11 +3,11 @@ ComfyUI-H3-RefForge — "RefMod" reference adapters for MiniMax H3
 (fork of Luisa's ComfyUI-MiniMaxH3Mod)
 
 Reference videos are expensive because they inject thousands of tokens into
-the H3 packed sequence.  A RefMod compresses a reference image/video into a
-tiny pooled latent (~4-16 tokens) that still rides the model's native ref2va
-path — the DiT attends to it through all 50 blocks like a real reference, but
-at a fraction of the compute.  Extraction needs only the H3 VAE: no diffusion
-model load, no training.
+the H3 packed sequence.  A RefMod stores a reference image/video as the VAE
+encode of a small copy (tens of tokens per frame) that still rides the model's
+native ref2va path — the DiT attends to it through all 50 blocks like a real
+reference, but at a fraction of the compute.  Extraction needs only the H3
+VAE: no diffusion model load, no training.
 
 Nodes
 ─────
@@ -22,7 +22,7 @@ Standalone extraction (image/video files): see extract_mod.py
 """
 
 __author__ = "Luisa (luisacaotica)"
-__version__ = "0.2.6"
+__version__ = "0.3.0"
 WEB_DIRECTORY = "./web"
 
 from .nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS

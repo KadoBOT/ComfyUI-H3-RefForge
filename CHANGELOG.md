@@ -5,7 +5,18 @@ All notable changes are tracked here. Each version is also published as a
 so you can keep using an older version if a new one changes something you
 rely on.
 
-## Unreleased
+## v0.3.0 (RefForge)
+
+- Encode Compressed References at their grid size: each ref is resized in pixel space to the latent grid (16 px per cell, aspect-fit, never finer than the source) and VAE-encoded, instead of pooling a full-resolution latent. Decoded, it stays closer to the source at every tested grid and needs no full-resolution encode. See AUDIT.md.
+- Remove latent refinement. Refinement Steps (`identity`) is unused and kept only for widget order; `optimize_latent`, `optimize_latent_multi`, `gauntlet_harness.py` and the CLI's `--identity` are gone.
+- Sample Compressed Reference videos before encoding: `latent_frames` caps the encode's latent frames (16 gives 12).
+- Fit `max_tokens` (truncate) by shrinking an image-only stack's grid before encoding, so every reference is kept; videos still drop frames.
+- Decode single-frame latents as two-frame clips in Text Encode and Inspect; the H3 VAE reconstructs a lone latent about 10 dB worse.
+- Stop upscaling refs below 320 px before encoding, and cover-crop stacked Compressed References to the first ref's grid like Full Reference, with masks following the crop.
+- Make `extract_mod.py` run the Create node instead of a separate copy of the pipeline.
+- Add `fidelity_bench.py`, which compares 0.2.6 and current extraction on the real H3 VAE.
+
+## Unreleased (upstream, before the fork)
 
 - Correct visual reference sampling to H3's 17k+5 video grid in the node and CLI. Preserve all frames of aligned clips and both endpoints when uniformly sampling; references/caps below five frames use the first image.
 - Support MPS-resident RefMod latents without global CPU fallback: pool and blur explicitly on CPU, preserving return device, dtype and autograd. Synchronize MPS in the refinement timing harness.

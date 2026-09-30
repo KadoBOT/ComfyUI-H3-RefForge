@@ -1,7 +1,7 @@
 [project]
 name = "ComfyUI-H3-RefForge"
 description = "Create, save and combine reusable MiniMax H3 image, video and audio references as RefMod safetensors, tuned for source fidelity per reference token. Fork of ComfyUI-MiniMaxH3Mod."
-version = "0.2.7"
+version = "0.3.0"
 license = { file = "LICENSE" }
 readme = "README.md"
 dependencies = ["torch", "safetensors", "numpy", "Pillow"]
