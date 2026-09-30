@@ -21,6 +21,53 @@ def reference_map(mods):
     return "\n".join(mapping) or "No active RefMods."
 
 
+def prepare_references(mods, vae=None, reference_fps=24.0, max_total_tokens=0):
+    """Numbered encoder presentation and DiT payload, also used by mixed-reference callers."""
+    from .nodes import _check_token_budget
+
+    if not math.isfinite(reference_fps) or not 1 <= reference_fps <= 120:
+        raise ValueError("reference_fps must be between 1 and 120.")
+    # Keep zero-strength slots out of both the presentation and DiT payload.
+    reference_map(mods)
+    active = [(mod, strength) for mod, strength in mods if strength > 0]
+    _check_token_budget(active, max_total_tokens)
+    if any(mod.kind != "audio" for mod, _ in active) and vae is None:
+        raise ValueError("Connect the H3 video VAE to present visual RefMods to CLIP.")
+    if any(mod.kind != "audio" for mod, _ in active) and not isinstance(vae.first_stage_model, MiniMaxH3VideoVAE):
+        raise ValueError("Visual RefMods require the MiniMax H3 video VAE.")
+
+    items, blocks = [], []
+    for mod, strength in active:
+        block = mod.ref_block(strength)
+        block["refmod"] = True
+        kind = block["kind"]
+        item = {"type": kind}
+        if kind != "audio":
+            # Decode the same weakened latent that the DiT receives. ComfyUI
+            # owns device placement and its decode OOM/tiled fallback.
+            pixels = vae.decode(block["latent"])
+            # ComfyUI video VAEs return BTHWC; older wrappers may already
+            # expose THWC. Each RefMod is one video, never a batch of videos.
+            if pixels.ndim == 5 and pixels.shape[0] == 1:
+                pixels = pixels[0]
+            if pixels.ndim != 4 or pixels.shape[-1] != 3 or pixels.shape[0] < 1:
+                raise ValueError(f"H3 video VAE must decode to [1, frames, height, width, 3] or [frames, height, width, 3]; got {tuple(pixels.shape)}.")
+            if kind == "image":
+                item["data"] = pixels[:1].cpu().clone()
+            else:
+                # Native H3 presents video at 2 fps. Index by timestamps so
+                # non-integer frame rates do not accumulate rounding drift.
+                times = [i / 2 for i in range(math.ceil(pixels.shape[0] * 2 / reference_fps))]
+                indices = [min(round(t * reference_fps), pixels.shape[0] - 1) for t in times]
+                item["data"] = pixels[indices].cpu()
+                item["timestamps"] = times
+            del pixels
+        items.append(item)
+        blocks.append(block)
+
+    return items, blocks
+
+
 class MiniMaxH3RefModTextEncode:
     @classmethod
     def INPUT_TYPES(cls):
@@ -42,52 +89,13 @@ class MiniMaxH3RefModTextEncode:
     DESCRIPTION = "Encode the prompt together with numbered RefMod references. Already attaches refs; connect directly to the sampler, without applying the same mods again."
 
     def encode(self, clip, mods, prompt, reference_fps=24.0, max_total_tokens=0, vae=None):
-        from .nodes import _check_token_budget
-
         native = isinstance(clip.tokenizer, MiniMaxH3Tokenizer)
         # Projected encoders retain their smaller model's tokenizer, but expose
         # H3 reference presentation on the CLIP wrapper itself (e.g. ClipProj).
         if not native and "minimax_ref_items" not in inspect.signature(clip.tokenize).parameters:
             raise ValueError("Connect an H3 CLIP or a projected CLIP supporting minimax_ref_items (such as current ClipProj).")
-        if not math.isfinite(reference_fps) or not 1 <= reference_fps <= 120:
-            raise ValueError("reference_fps must be between 1 and 120.")
-        # Keep zero-strength slots out of both the presentation and DiT payload.
         mapping = reference_map(mods)
-        active = [(mod, strength) for mod, strength in mods if strength > 0]
-        _check_token_budget(active, max_total_tokens)
-        if any(mod.kind != "audio" for mod, _ in active) and vae is None:
-            raise ValueError("Connect the H3 video VAE to present visual RefMods to CLIP.")
-        if any(mod.kind != "audio" for mod, _ in active) and not isinstance(vae.first_stage_model, MiniMaxH3VideoVAE):
-            raise ValueError("Visual RefMods require the MiniMax H3 video VAE.")
-
-        items, blocks = [], []
-        for mod, strength in active:
-            block = mod.ref_block(strength)
-            block["refmod"] = True
-            kind = block["kind"]
-            item = {"type": kind}
-            if kind != "audio":
-                # Decode the same weakened latent that the DiT receives. ComfyUI
-                # owns device placement and its decode OOM/tiled fallback.
-                pixels = vae.decode(block["latent"])
-                # ComfyUI video VAEs return BTHWC; older wrappers may already
-                # expose THWC. Each RefMod is one video, never a batch of videos.
-                if pixels.ndim == 5 and pixels.shape[0] == 1:
-                    pixels = pixels[0]
-                if pixels.ndim != 4 or pixels.shape[-1] != 3 or pixels.shape[0] < 1:
-                    raise ValueError(f"H3 video VAE must decode to [1, frames, height, width, 3] or [frames, height, width, 3]; got {tuple(pixels.shape)}.")
-                if kind == "image":
-                    item["data"] = pixels[:1].cpu().clone()
-                else:
-                    # Native H3 presents video at 2 fps. Index by timestamps so
-                    # non-integer frame rates do not accumulate rounding drift.
-                    times = [i / 2 for i in range(math.ceil(pixels.shape[0] * 2 / reference_fps))]
-                    indices = [min(round(t * reference_fps), pixels.shape[0] - 1) for t in times]
-                    item["data"] = pixels[indices].cpu()
-                    item["timestamps"] = times
-                del pixels
-            items.append(item)
-            blocks.append(block)
+        items, blocks = prepare_references(mods, vae, reference_fps, max_total_tokens)
 
         tokens = clip.tokenize(prompt, minimax_ref_items=items)
         conditioning = clip.encode_from_tokens_scheduled(tokens)
