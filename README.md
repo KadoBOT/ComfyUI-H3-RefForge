@@ -29,7 +29,8 @@ Support the original author: [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg
 
 **Refinement Steps** is unused and kept for workflow compatibility. Mods saved
 by 0.2.x load unchanged; create them again to benefit. Measurements, rejected
-alternatives and open gaps: [AUDIT.md](AUDIT.md).
+alternatives and open gaps: [AUDIT.md](AUDIT.md); likeness in generated video:
+[EVALUATION.md](EVALUATION.md).
 
 ## What's new — v0.2.6
 
@@ -382,7 +383,10 @@ cost 256 tokens; sixteen 64×64 frames cost 16,384 tokens before budget fitting.
 A small grid is spatial compression, **not a concept extractor**. It may retain
 colors and large structures while losing face detail, texture or useful motion.
 A larger grid preserves more information, including unwanted content. There
-is no validated universal 8×8 concept / 16×16 identity sweet spot.
+is no validated universal 8×8 concept / 16×16 identity sweet spot. For one
+person's six-photo stack, a 36-cell grid (1296 tokens) gave 0.022–0.042 higher
+face identity in generated video than a 24-cell grid (576 tokens); see
+[EVALUATION.md](EVALUATION.md).
 
 `multiplier` repeats the extracted visual latent along its time axis; loader
 `copies` repeats a reference block. Both increase token cost. Neither adds new
@@ -448,6 +452,12 @@ RefMod receive one `<Video n>` label, not one Picture label per original photo.
 Keep different characters in separate files. Neither the filename nor description
 is a trigger, and `<Subject n>` is not automatically bound to a loader slot.
 
+Describe how each subject looks in the prompt, not only which reference shows
+them, for example `<Subject 1> is an adult woman with long brown hair and brown
+eyes, the same woman shown in all the views in <Video 1>.` In a render test with
+a six-photo stack this raised face identity by 0.019 over the label alone, at no
+token cost.
+
 Visual presentation requires decoding the stored latent for Qwen; it adds VAE and
 vision-encoder work. Compressed latents reconstruct less detail than the original
 photos. A single-frame latent is decoded as a two-frame clip and its first frame
@@ -458,9 +468,10 @@ without decoding audio. Loader strengths affect the latents; saved Apply curves
 and overrides are not applied by this node. `max_total_tokens` limits DiT reference
 tokens, not Qwen tokens or VAE decode memory.
 
-Presentation/payload tests pass, but full GPU generation and identity/voice
-quality remain unverified. Compare against the old Apply workflow with the same
-references, prompt and seed.
+Face identity in generated video was measured for one person's photo stack
+([EVALUATION.md](EVALUATION.md)); once the prompt described her, Text Encode and
+Apply alone scored alike. Other references and voice quality remain unverified;
+compare against the Apply workflow with the same references, prompt and seed.
 
 ### Saving without a Preview or sampler
 

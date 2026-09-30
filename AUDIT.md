@@ -118,22 +118,25 @@ tokens) at 18.96 dB / 0.4632.
 | A tiny autoencoder as a differentiable decoder | Local taeh3 weights do not match the latent layout (96 vs 256 channels) |
 | Latent back-projection (re-encode the decode residual) | 0.1–1 dB worse |
 | Pixel back-projection (adjust the thumbnail so its decode matches) | Best at iteration 0 |
-| Lanczos instead of area downscaling | Area 0.1 dB better |
+| Lanczos or antialiased bicubic instead of area downscaling | Area 0.1 dB better, and area decodes score 0.002–0.019 higher face similarity to the source |
 | Unsharp mask before encoding | Worse |
+| Six picture blocks instead of one clip for a stack | −0.018 face identity in generated video, not significant; see [EVALUATION.md](EVALUATION.md) |
+| Text Encode showing each stacked still as its own small vision block | +0.006 face identity, not significant, and 2.2 s slower per render |
 
 ## Open gaps
 
-- **No generation benchmark.** Scores measure the stored latent, not what H3
-  generates from it. An identity/style A/B with fixed prompts and seeds and a
-  face or style similarity model is still needed (upstream `PLAN_0.3.0.md` asks
-  for one).
+- **Generation benchmark covers one person.** The scores above measure the
+  stored latent. [EVALUATION.md](EVALUATION.md) measures face identity in
+  generated video for one six-photo stack; style, objects, single images, videos
+  and voice remain unmeasured.
 - **Grid 8 hi SSIM.** At the smallest grid, hi SSIM is lower on 6 of 10 images
   (mean −0.013) while PSNR is higher on all 10. The pooled decode is smoother,
   which SSIM favors on flat backgrounds when a 128 px decode is upscaled.
 - **Motion speed.** Clips are sampled uniformly over their length, so a long
   clip stored in few latents plays faster. Kept from upstream.
 - **Stacks are pseudo-videos.** Stacked images become consecutive latent
-  frames; Text Encode shows them to Qwen as one clip.
+  frames; Text Encode shows them to Qwen as one clip. Splitting them for the
+  DiT or for Qwen did not measurably help (see Tried and rejected).
 - **Audio.** Input is cut to `max_seconds`, encoded in independent 10 s chunks
   with no silence trimming, and the token budget keeps only the start. Not
   measured here.

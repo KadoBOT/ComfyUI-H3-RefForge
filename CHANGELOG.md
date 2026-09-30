@@ -5,6 +5,10 @@ All notable changes are tracked here. Each version is also published as a
 so you can keep using an older version if a new one changes something you
 rely on.
 
+## Unreleased (RefForge)
+
+- Add EVALUATION.md: face identity in generated video for one person's photo stack, comparing Text Encode presentations, grids 24 and 36 and creation filters against 0.3.0. No code change passed; describing the subject's appearance in the prompt raised identity by 0.019 at no token cost, and the README now recommends it.
+
 ## v0.3.0 (RefForge)
 
 - Encode Compressed References at their grid size: each ref is resized in pixel space to the latent grid (16 px per cell, aspect-fit, never finer than the source) and VAE-encoded, instead of pooling a full-resolution latent. Decoded, it stays closer to the source at every tested grid and needs no full-resolution encode. See AUDIT.md.
