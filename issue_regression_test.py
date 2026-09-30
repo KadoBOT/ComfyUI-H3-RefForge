@@ -25,7 +25,10 @@ with tempfile.TemporaryDirectory() as import_dir:
         N = importlib.import_module(f"custom_nodes.{ROOT.name}.nodes")
 import execution
 import nodes as comfy_nodes
+from comfy.ldm.minimax.vae import MiniMaxH3VideoVAE
 COMMON = importlib.import_module(N.__package__ + ".common")
+CORE = importlib.import_module(N.__package__ + ".core")
+PROMPT = importlib.import_module(N.__package__ + ".prompt")
 
 
 class IssueRegressions(unittest.TestCase):
@@ -258,6 +261,23 @@ class IssueRegressions(unittest.TestCase):
         self.assertEqual(seen, [2, 7])
         self.assertEqual((tuple(image.shape), image.max().item()), ((1,32,32,3), 0))
         self.assertEqual(tuple(video.shape), (22,32,32,3))
+
+    def test_text_encode_caps_the_vision_tokens_of_a_stack_view(self):
+        def decode(latent):
+            t, h, w = latent.shape[2:]
+            return torch.rand(1, 4 * t - 3, 16 * h, 16 * w, 3)
+        vae = types.SimpleNamespace(first_stage_model=object.__new__(MiniMaxH3VideoVAE), decode=decode)
+        def view(source, h, w):
+            mod = CORE.H3RefMod(name=source, kind='video', latent=torch.zeros(1,24,6,h,w),
+                                latent_h=h, latent_w=w, latent_t=6, source=source)
+            items, blocks = PROMPT.prepare_references([(mod, 1.0)], vae)
+            self.assertTrue(torch.equal(blocks[0]['latent'], mod.latent))
+            self.assertEqual(items[0]['timestamps'], [0.0, 0.5])
+            return tuple(items[0]['data'].shape)
+        # grid 36 decodes to 384x576 px, 216 Qwen tokens per frame; a stack's view gets 54
+        self.assertEqual(view('stack', 36, 24), (2,288,192,3))
+        self.assertEqual(view('video', 36, 24), (2,576,384,3))
+        self.assertEqual(view('stack', 16, 10), (2,256,160,3))
 
 
 if __name__ == "__main__":

@@ -3,10 +3,23 @@
 import math
 import inspect
 
+import comfy.utils
 from comfy.text_encoders.minimax import MiniMaxH3Tokenizer
 from comfy.ldm.minimax.vae import MiniMaxH3VideoVAE
 
 from .common import decode_visual
+
+STACK_VIEW_TOKENS = 54  # Qwen vision tokens per frame of a stack's view: 192x288 px at 2:3
+
+
+def _stack_view(frames):
+    """Area-downscale ``[N, H, W, 3]`` frames to about ``STACK_VIEW_TOKENS`` Qwen tokens of 32x32 px."""
+    h, w = frames.shape[1], frames.shape[2]
+    if h * w <= STACK_VIEW_TOKENS * 32 * 32:
+        return frames
+    th = max(32, round(math.sqrt(STACK_VIEW_TOKENS * h / w)) * 32)
+    tw = max(32, round(math.sqrt(STACK_VIEW_TOKENS * w / h)) * 32)
+    return comfy.utils.common_upscale(frames.movedim(-1, 1), tw, th, "area", "disabled").movedim(1, -1)
 
 
 def reference_map(mods):
@@ -55,7 +68,8 @@ def prepare_references(mods, vae=None, reference_fps=24.0, max_total_tokens=0):
                 # non-integer frame rates do not accumulate rounding drift.
                 times = [i / 2 for i in range(math.ceil(pixels.shape[0] * 2 / reference_fps))]
                 indices = [min(round(t * reference_fps), pixels.shape[0] - 1) for t in times]
-                item["data"] = pixels[indices].cpu()
+                frames = pixels[indices]
+                item["data"] = (_stack_view(frames) if mod.source == "stack" else frames).cpu()
                 item["timestamps"] = times
             del pixels
         items.append(item)
