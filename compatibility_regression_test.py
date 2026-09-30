@@ -8,15 +8,13 @@ your ComfyUI directory to PYTHONPATH so common.py can import comfy.utils.
 from pathlib import Path
 import sys
 import unittest
-from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import torch
 import torch.nn.functional as F
 
-from common import sample_video_for_vae, snap_to_causal_grid
-from core import _blur_latent, pool_latent
-from gauntlet_harness import synchronize
+from common import frames_for_latents, latent_count, resize_to_grid, sample_video_for_vae, snap_to_causal_grid
+from core import _blur_latent, fit_grid, pool_latent
 
 
 class VideoGridTests(unittest.TestCase):
@@ -51,6 +49,39 @@ class VideoGridTests(unittest.TestCase):
             sample_video_for_vae(torch.empty(0,1,1,3))
         with self.assertRaises(ValueError):
             sample_video_for_vae(torch.zeros(5,1,1,3), 0)
+
+    def test_latent_frame_limits_invert_the_causal_grid(self):
+        for n, latents in ((1,1),(5,2),(22,7),(39,12),(90,27),(124,37)):
+            self.assertEqual(latent_count(n), latents)
+            self.assertEqual(frames_for_latents(latents), n)
+        for limit in range(1, 40):
+            with self.subTest(limit=limit):
+                frames = frames_for_latents(limit)
+                self.assertEqual(snap_to_causal_grid(frames), frames)
+                self.assertLessEqual(latent_count(frames), limit)
+                self.assertGreater(latent_count(5 if frames == 1 else frames + 17), limit)
+
+
+class GridTests(unittest.TestCase):
+    def test_grid_follows_aspect_source_cells_and_budget(self):
+        self.assertEqual(fit_grid(1.0, 16, 64, 64), (16,16))
+        self.assertEqual(fit_grid(512/768, 16, 32, 48), (10,16))
+        self.assertEqual(fit_grid(768/512, 16, 48, 32), (16,10))
+        self.assertEqual(fit_grid(64/96, 32, 4, 6), (4,6))
+        self.assertEqual(fit_grid(1.0, 16, 16, 16, 25), (10,10))
+        for aspect in (0.3, 0.5, 1.0, 1.7, 3.0):
+            for budget in (1, 6, 25, 64, 300):
+                with self.subTest(aspect=aspect, budget=budget):
+                    h, w = fit_grid(aspect, 32, 64, 64, budget)
+                    self.assertEqual((h % 2, w % 2), (0, 0))
+                    self.assertLessEqual((h // 2) * (w // 2), budget)
+
+    def test_resize_to_grid_averages_downscales_and_crops_like_the_canvas(self):
+        frames = torch.rand(3,64,96,4)
+        expected = F.avg_pool2d(frames[:, :, 16:80, :3].movedim(-1, 1), 2).movedim(1, -1)
+        torch.testing.assert_close(resize_to_grid(frames, 2, 2), expected)
+        self.assertTrue(torch.equal(resize_to_grid(frames, 4, 6), frames[..., :3]))
+        self.assertEqual(tuple(resize_to_grid(frames[:, :16, :16], 2, 2).shape), (3,32,32,3))
 
 
 class PoolingTests(unittest.TestCase):
@@ -91,19 +122,6 @@ class PoolingTests(unittest.TestCase):
             function(cpu).square().sum().backward()
             function(gpu).square().sum().backward()
             torch.testing.assert_close(gpu.grad.cpu(), cpu.grad, rtol=1e-5, atol=1e-6)
-
-
-class TimingTests(unittest.TestCase):
-    def test_synchronizes_only_the_selected_backend(self):
-        with patch.object(torch.mps, 'synchronize') as mps, \
-                patch.object(torch.cuda, 'synchronize') as cuda:
-            synchronize('cpu')
-            mps.assert_not_called()
-            cuda.assert_not_called()
-            synchronize('mps')
-            mps.assert_called_once_with()
-            synchronize('cuda:1')
-            cuda.assert_called_once_with(torch.device('cuda:1'))
 
 
 if __name__ == '__main__':

@@ -62,8 +62,12 @@ from .common import (
     refmods_dir,
     mod_output_path,
     resize_ref as _resize_ref,
+    resize_to_grid as _resize_to_grid,
     sample_video_for_vae as _sample_video_for_vae,
-    ensure_min_size as _ensure_min_size,
+    snap_to_causal_grid,
+    latent_count,
+    frames_for_latents,
+    decode_visual,
 )
 from . import continuum_bridge
 from .audio import make_audio_mod
@@ -73,13 +77,11 @@ from .core import (
     CURVE_SHAPES,
     H3RefMod,
     _blur_latent,
-    aspect_grid,
     curve_strengths,
     curve_value_at,
+    fit_grid,
     fit_token_budget,
     normalize_mode,
-    optimize_latent,
-    optimize_latent_multi,
     pool_latent,
     read_refmod_meta,
 )
@@ -1556,27 +1558,25 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
 
     Two modes:
 
-      * ``encode`` (default) — each ref is resized to ``ref_resolution`` short
-        edge (down only) and VAE-encoded at that resolution, exactly like the
+      * ``encode`` — each ref is resized to ``ref_resolution`` short edge
+        (down only) and VAE-encoded at that resolution, exactly like the
         official ref2video node.  The mod stores the real encode, so identity
         (a face, an outfit) comes through; files are ~0.2-1 MB per frame.
         (Old name: ``full``.)
-      * ``training`` — each ref is first resized to ``ref_resolution`` short
-        edge too (the latent is pooled to a tiny grid anyway, so encoding at
-        native resolution is wasted compute — this is the main speed dial for
-        training mode), then average-pooled to a tiny grid (4x4 = 4 tokens
-        per frame) and refined with gradient steps against the encode — still
-        no diffusion model.  Nearly free to inject but only carries concept /
-        motion, not fine identity.  (Old name: ``pooled``.)
+      * ``training`` (default) — each ref is resized in pixel space to the
+        ``pool_h x pool_w`` latent grid (16 px per cell, aspect-fit, never
+        finer than the source) and VAE-encoded at that size, so the mod is a
+        real low-resolution encode at a fraction of the tokens.  Video refs
+        are sampled to at most ``latent_frames`` latent frames first.  No
+        diffusion model or gradient steps are involved.  (Old name: ``pooled``.)
 
-    ``identity`` (training mode only) is the refinement loop — the only
-    "training" in the pack.
+    ``identity`` ("Refinement Steps") is unused and kept so saved workflows
+    keep their widget order: refining a pooled latent against the full encode
+    reconstructed worse than encoding the resized ref directly.
 
-    ``merge`` (training mode only): instead of stacking each ref's own pooled
-    latent, one shared grid is refined jointly against *every* full encode
-    (mean reconstruction error), so a collection lands on what's common
-    across all the views — the cheap multi-exemplar analog of training, at
-    one mod's token cost. See ``core.optimize_latent_multi``.
+    ``merge`` (training mode only): the refs' grid encodes are averaged into
+    one latent instead of stacked, so a collection lands on what's common
+    across all the views at one mod's token cost.
 
     ``motion_only`` (training mode only, experimental): video refs are
     converted to per-frame temporal differences (|f[t+1] - f[t]|) before
@@ -1585,9 +1585,11 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
     lineart animation this keeps the moving lines and drops the static
     drawing. Image refs have no motion and keep their appearance (warned).
 
-    ``max_tokens`` (0 = off) hard-caps the total injected tokens: when the
-    stacked refs exceed it, near-duplicate latent frames are dropped first,
-    then frames are resampled to fit (see ``core.fit_token_budget``).
+    ``max_tokens`` (0 = off) hard-caps the total injected tokens.  With the
+    ``truncate`` policy an image-only stack shrinks its grid before encoding
+    so every ref survives; with video refs near-duplicate latent frames are
+    dropped first, then frames are resampled to fit (see
+    ``core.fit_token_budget``).
     """
 
     @classmethod
@@ -1601,12 +1603,12 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                 "Stills plug into ref_image_1, video frames into ref_video_1, "
                 "and the next slot of that type appears. refs are stacked into "
                 "one video-kind mod, so a multi-image moodboard keeps each ref's "
-                "own content instead of averaging away. 'training' mode (default) "
-                "compresses the refs to a grid and refines it — good identity at "
-                "a fraction of the tokens; 'encode' stores the full-res encode "
-                "(max identity, MB-size mod). Flip 'merge' on to extract a "
-                "collection as ONE consensus latent (joint refinement against "
-                "every ref) instead of a stack."
+                "own content instead of averaging away. 'Compressed Reference' "
+                "(default) encodes each ref resized to a small latent grid — a "
+                "faithful thumbnail at a fraction of the tokens; 'Full Reference' "
+                "stores the full-res encode (max identity, MB-size mod). Flip "
+                "'merge' on to extract a collection as ONE consensus latent (the "
+                "mean of every ref's encode) instead of a stack."
             ),
             category="MiniMax-H3/mod",
             inputs=[
@@ -1614,7 +1616,7 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                     tooltip="Saved mod name (appears in the Load H3 RefMods dropdown after a reload)."),
                 io.Combo.Input("mode", options=["Compressed Reference", "Full Reference", "training", "encode"],
                     default="Compressed Reference",
-                    tooltip="Compressed Reference pools the latent and optionally refines its reconstruction. "
+                    tooltip="Compressed Reference VAE-encodes each ref resized to the pool_h x pool_w latent grid (16 px per cell). "
                             "Full Reference stores the VAE encode, subject to resolution/frame/token limits. "
                             "Neither mode trains H3 weights. Legacy mode values remain accepted."),
                 io.Combo.Input("concept_type", options=list(CONCEPT_TYPES), default="generic",
@@ -1623,9 +1625,8 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                             "'background', 'style', or 'generic'. Stored in the mod and used by "
                             "the loaders' prompt_hint output (merges concept_type + description "
                             "into a string you can concat onto your CLIP prompt). 'identity' in "
-                            "training mode with a small grid also triggers a warning nudging you "
-                            "toward 'encode' mode or a bigger grid — pooling is lossy in exactly "
-                            "the way that destroys facial identity."),
+                            "Compressed Reference with a grid under 16 also triggers a warning — "
+                            "a thumbnail that small is too coarse to carry a face."),
                 io.Autogrow.Input("refs_image", optional=True,
                     template=io.Autogrow.TemplatePrefix(
                         input=io.Image.Input("ref_image", tooltip="Reference still: one image of the "
@@ -1661,41 +1662,41 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                 io.Vae.Input("vae", optional=True,
                     tooltip="Standard VAE, used when av_encoder is not connected."),
                 io.Int.Input("ref_resolution", default=1024, min=256, max=2048, step=64,
-                    tooltip="Target short edge in px (downscale only, never upscale), applied to "
-                            "BOTH modes: 'encode' stores at that res, 'training' encodes smaller "
-                            "too (it pools to a grid anyway, so native-res encoding is wasted "
-                            "compute — this is the main speed dial for training mode). 1024 is a "
-                            "good default; 512 halves encode cost; 2048 = official max fidelity, "
-                            "4x the tokens of 1024."),
+                    tooltip="Target short edge in px (downscale only, never upscale). Full Reference "
+                            "encodes at that resolution: 1024 is a good default, 512 halves encode "
+                            "cost, 2048 = official max fidelity at 4x the tokens of 1024. Compressed "
+                            "Reference never uses more than ref_resolution/16 latent cells on the "
+                            "short edge."),
                 io.Int.Input("pool_h", default=16, min=2, max=64, step=2,
-                    tooltip="Pooled mode: spatial latent grid after pooling. The grid is auto-fit to "
-                            "the source's aspect ratio (long edge = max of the two dials, other edge "
-                            "derived), so a portrait person isn't squished into a square grid "
-                            "(the 'fat/chubby' distortion). Square sources keep the exact dial value. "
-                            "16x16 = 64 tokens/frame (concept sweet spot); 32x32 = 256; 64x64 = 1024, "
-                            "full-mode parity for identity."),
+                    tooltip="Compressed Reference: latent grid (16 px per cell) the refs are resized "
+                            "to and encoded at. The grid is auto-fit to the source's aspect ratio "
+                            "(long edge = max of the two dials, other edge derived), so a portrait "
+                            "person isn't squished into a square grid, and is never finer than the "
+                            "source's own pixels. Square sources keep the exact dial value. "
+                            "16x16 = 64 tokens/frame; 32x32 = 256; 64x64 = 1024."),
                 io.Int.Input("pool_w", default=16, min=2, max=64, step=2,
-                    tooltip="Pooled mode: grid width (long edge if the source is wider than tall)."),
+                    tooltip="Compressed Reference: grid width (long edge if the source is wider than tall)."),
                 io.Int.Input("latent_frames", default=16, min=1, max=2147483647,
-                    tooltip="Per-video temporal limit. Encode mode samples up to this many source frames "
-                            "on H3's 17k+5 grid before VAE encoding (5, 22, 39...; 16 selects 5 across the clip; below 5 selects the first image); training mode pools to "
-                            "up to this many latent frames after encoding. Aligned clips remain unchanged "
-                            "when the limit is at least their frame count. Images use 1. Higher values "
+                    tooltip="Per-video temporal limit. Full Reference samples up to this many source frames "
+                            "on H3's 17k+5 grid before VAE encoding (5, 22, 39...; 16 selects 5 across the clip; "
+                            "below 5 selects the first image). Compressed Reference samples frames so the encode "
+                            "has at most this many latent frames (2, 7, 12, 17...; 16 gives 12; 1 selects the "
+                            "first image). Clips within the limit are kept whole. Images use 1. Higher values "
                             "increase memory and token cost; max_tokens can still reduce the result."),
-                io.Int.Input("identity", display_name="Refinement Steps", default=500, min=0, max=2000, step=50,
-                    tooltip="Compressed Reference only: optimization steps to reduce latent reconstruction "
-                            "error. 0 uses pooling alone. This is not identity strength or model training."),
+                io.Int.Input("identity", display_name="Refinement Steps (unused)", default=500, min=0, max=2000, step=50,
+                    tooltip="No longer used; kept so saved workflows load unchanged. Refining a pooled "
+                            "latent toward the full encode reconstructed worse than encoding the resized "
+                            "ref directly, which Compressed Reference now does."),
                 io.Boolean.Input("merge", default=False,
                     label_on="merge", label_off="stack",
-                    tooltip="Merge mode (training only): instead of stacking each ref's own "
-                            "pooled latent, optimize ONE shared grid against every full encode "
-                            "jointly — the result lands on what's COMMON across all the views "
-                            "(structure, motion, identity) rather than any single shot's "
-                            "framing/background. Ideal for a collection: many angles of a "
-                            "subject, a folder of similar clips -> one tiny consensus mod, one "
-                            "ref block's worth of tokens. Keeps every full encode in VRAM "
-                            "during refinement. Off = stack (each ref keeps its own frames). "
-                            "Ignored when mode='encode'."),
+                    tooltip="Merge mode (Compressed Reference only): instead of stacking each ref's "
+                            "own frames, average every ref's grid encode into ONE latent — the result "
+                            "keeps what's COMMON across the views (structure, identity) rather than "
+                            "any single shot's framing/background. For a collection: many angles of "
+                            "a subject, a folder of similar clips -> one consensus mod, one ref "
+                            "block's worth of tokens. Refs with fewer frames are stretched to the "
+                            "longest. Off = stack (each ref keeps its own frames). "
+                            "Ignored in Full Reference."),
                 io.Boolean.Input("motion_only", default=False,
                     label_on="motion", label_off="full",
                     tooltip="EXPERIMENTAL — extract only what MOVES. Video refs are "
@@ -1716,15 +1717,14 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                             "the ref scales roughly with N. 1 = no repeat; file size grows with N."),
                 io.Int.Input("max_tokens", default=5120, min=0, max=2147483647, step=512,
                     tooltip="Hard cap on the total tokens the mod injects (0 = no cap; 5120 is a good "
-                            "performance default). If the stacked refs exceed it, near-duplicate "
-                            "latent frames are dropped first (video refs are full of frames that "
-                            "differ only by noise — each one still costs a token per spatial patch "
-                            "in every block), then frames are resampled to fit. The cap is honored "
-                            "after the multiplier. Lower latent_frames/ref_resolution instead to "
-                            "avoid wasting encode work: ~23K tokens = one 1024px encode-mode video "
-                            "ref at 16 frames."),
+                            "performance default). With the truncate policy, an image-only stack "
+                            "shrinks its latent grid before encoding so every ref is kept; with video "
+                            "refs, near-duplicate latent frames are dropped first (each one still "
+                            "costs a token per spatial patch in every block), then frames are "
+                            "resampled to fit. The cap is honored after the multiplier. Lower "
+                            "latent_frames/ref_resolution instead to avoid wasting encode work."),
                 io.Combo.Input("extraction_preset", options=["manual", "identity_encode", "style_experimental", "motion_sequence"], default="manual", optional=True,
-                    tooltip="manual preserves controls. identity_encode: Full Reference, resolution=1024, steps=0, merge/motion_only off. style_experimental: Compressed Reference, pool=8x8, steps=150, merge/motion_only off. motion_sequence: Compressed Reference, pool=16x16, merge/motion_only off; preserves frame limit and Refinement Steps. It keeps appearance, not frame differences."),
+                    tooltip="manual preserves controls. identity_encode: Full Reference, resolution=1024, merge/motion_only off. style_experimental: Compressed Reference, pool=8x8, merge/motion_only off. motion_sequence: Compressed Reference, pool=16x16, merge/motion_only off; preserves the frame limit. It keeps appearance, not frame differences."),
                 io.String.Input("subfolder", default="", optional=True, tooltip="Optional folder inside models/refmods, for example celebs or voices."),
                 io.String.Input("description", default="", multiline=True,
                     tooltip="Optional text describing the concept (e.g. 'a ginger woman with messy "
@@ -1735,7 +1735,7 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                 io.Custom("H3_MASK_LIST").Input("mask_list", optional=True,
                     tooltip="Connect Collect H3 RefMod Masks to preserve different mask sizes. One mask broadcasts; otherwise images, videos, then folder references in order. Use mask OR mask_list."),
                 io.Combo.Input("budget_policy", options=["truncate", "error"], default="truncate", optional=True,
-                    tooltip="On max_tokens overflow: truncate uses the existing frame reduction; error stops without saving. 0 max_tokens disables the cap."),
+                    tooltip="On max_tokens overflow: truncate shrinks an image stack's grid or reduces video frames; error stops without saving. 0 max_tokens disables the cap."),
             ],
             outputs=[
                 io.Custom("H3_REF_MODS").Output("mods",
@@ -1758,22 +1758,20 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
         # old pre-Autogrow workflows pass their widget values through as kwargs:
         # map them onto the new inputs so those saved workflows keep running.
         # ``pool`` is the old height; ``pool_w`` arrives as the named param.
-        if legacy.get("optimize") is not None:
-            identity = legacy["optimize"]
         if legacy.get("pool") is not None:
             pool_h = int(legacy["pool"])
             if pool_w == 16:  # old single-pool default: square grid
                 pool_w = pool_h
         preset_replaced = ""
         if extraction_preset == "identity_encode":
-            mode, ref_resolution, identity, merge, motion_only = "encode", 1024, 0, False, False
-            preset_replaced = "mode=Full Reference, ref_resolution=1024, Refinement Steps=0, merge=False, motion_only=False"
+            mode, ref_resolution, merge, motion_only = "encode", 1024, False, False
+            preset_replaced = "mode=Full Reference, ref_resolution=1024, merge=False, motion_only=False"
         elif extraction_preset == "style_experimental":
-            mode, pool_h, pool_w, identity, merge, motion_only = "training", 8, 8, 150, False, False
-            preset_replaced = "mode=Compressed Reference, pool_h=8, pool_w=8, Refinement Steps=150, merge=False, motion_only=False"
+            mode, pool_h, pool_w, merge, motion_only = "training", 8, 8, False, False
+            preset_replaced = "mode=Compressed Reference, pool_h=8, pool_w=8, merge=False, motion_only=False"
         elif extraction_preset == "motion_sequence":
             mode, pool_h, pool_w, merge, motion_only = "training", 16, 16, False, False
-            preset_replaced = "mode=Compressed Reference, pool_h=16, pool_w=16, merge=False, motion_only=False (frame limit and Refinement Steps preserved)"
+            preset_replaced = "mode=Compressed Reference, pool_h=16, pool_w=16, merge=False, motion_only=False (frame limit preserved)"
         elif extraction_preset != "manual":
             raise ValueError("Unknown extraction preset.")
         mode = normalize_mode(mode)  # accept legacy 'full'/'pooled'
@@ -1781,7 +1779,7 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
             print(f"[MiniMaxH3RefModExtract] preset={extraction_preset} replaces {preset_replaced}")
         ignored = []
         if mode == "encode":
-            ignored.append("pool_h, pool_w, Refinement Steps, merge, motion_only (Full Reference)")
+            ignored.append("pool_h, pool_w, merge, motion_only (Full Reference)")
         if mask is None and mask_list is None:
             ignored.append("background_retention (no mask)")
         if max_tokens == 0:
@@ -1789,14 +1787,9 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
         if ignored:
             print("[MiniMaxH3RefModExtract] ignored: " + "; ".join(ignored))
         if concept_type == "identity" and mode == "training" and max(pool_h, pool_w) < 16:
-            print(
-                f"[MiniMaxH3RefModExtract] warning: concept_type='identity' with "
-                f"mode='training' at a {pool_h}x{pool_w} grid — pooling averages away "
-                f"exactly the detail that carries a face (this is almost certainly "
-                f"your 'chubby/older' drift). For a person, either switch mode='encode' "
-                f"(real identity, higher token cost) or raise pool_h/pool_w toward "
-                f"32x32+ and expect it to still be a soft approximation, not a lock."
-            )
+            print(f"[MiniMaxH3RefModExtract] warning: a {pool_h}x{pool_w} grid is a "
+                  f"{max(pool_h, pool_w) * 16} px thumbnail, too coarse for a face; use "
+                  f"Full Reference or a 32+ grid for concept_type='identity'.")
         if av_encoder is None and vae is None:
             raise ValueError(
                 "MiniMaxH3RefModExtract: connect an av_encoder (MiniMax-H3 "
@@ -1850,28 +1843,39 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
             else:
                 # image slot: pin to a single still even if a batch arrived
                 sources.append((norm[:1], False))
-        # encode each source independently (full-res or pooled), then stack.
-        # Full-res refs must share one spatial canvas so the stacked latent has
-        # a single H/W: anchor on the first source, cover-crop the rest to it.
-        canvas = None
-        if mode == "encode" and len(sources) > 1:
-            h, w = sources[0][0].shape[1], sources[0][0].shape[2]
-            scale = min(1.0, ref_resolution / min(h, w))
-            canvas = (max(32, round(w * scale / 32) * 32),
-                      max(32, round(h * scale / 32) * 32))
-        # training mode: anchor the pool grid to the first source's aspect so
-        # a portrait person isn't squished into a square 16x16 grid (the
-        # "fat" distortion).  The VAE scales space uniformly, so pixel
-        # aspect == latent aspect.
-        pool_grid = None
-        if mode == "training":
-            h0, w0 = sources[0][0].shape[1], sources[0][0].shape[2]
-            pool_grid = aspect_grid(pool_h, pool_w, h0 / w0)
-            if pool_grid != (pool_h, pool_w):
-                print(f"[MiniMaxH3RefModExtract] pooled grid {pool_h}x{pool_w} -> "
-                      f"{pool_grid[0]}x{pool_grid[1]} to match source aspect "
-                      f"{w0}x{h0} (avoids squishing the subject wide)")
-        gh, gw = pool_grid if pool_grid is not None else (pool_h, pool_w)
+        # Every ref is resized in pixel space and VAE-encoded at the size it is
+        # stored at, so both modes store a real encode.  Stacked refs share one
+        # latent grid anchored on the first source; the rest are cover-cropped.
+        h0, w0 = sources[0][0].shape[1], sources[0][0].shape[2]
+        scale = min(1.0, ref_resolution / min(h0, w0))
+        if mode == "encode":
+            gh = max(32, round(h0 * scale / 32) * 32) // 16
+            gw = max(32, round(w0 * scale / 32) * 32) // 16
+            frame_cap = latent_frames
+        else:
+            # aspect-fit so a portrait person isn't squished into a square grid,
+            # and never finer than the source's own 16 px cells
+            gh, gw = fit_grid(h0 / w0, max(pool_h, pool_w), h0 * scale / 16, w0 * scale / 16)
+            if (gh, gw) != (pool_h, pool_w):
+                print(f"[MiniMaxH3RefModExtract] grid {pool_h}x{pool_w} -> {gh}x{gw} "
+                      f"for the {w0}x{h0} source")
+            frame_cap = frames_for_latents(latent_frames)
+        merging = merge and mode == "training" and len(sources) > 1
+        budget_grid = False
+        if max_tokens > 0 and budget_policy == "truncate":
+            counts = [latent_count(snap_to_causal_grid(min(src.shape[0] - int(motion_only), frame_cap)))
+                      if is_video else 1 for src, is_video in sources]
+            total = multiplier * (max(counts) if merging else sum(counts))
+            # an image-only stack shrinks its grid instead of losing whole refs;
+            # video frames stay the lever fit_token_budget pulls after encoding
+            frame_budget = max_tokens if max(counts) > 1 else max_tokens // total
+            if frame_budget >= 1 and (gh // 2) * (gw // 2) > frame_budget:
+                fitted = fit_grid(gh / gw, max(gh, gw), gh, gw, frame_budget)
+                print(f"[MiniMaxH3RefModExtract] {gh}x{gw} -> {fitted[0]}x{fitted[1]} "
+                      f"latent grid to fit max_tokens={max_tokens}")
+                gh, gw = fitted
+                budget_grid = True
+        canvas = (gw * 16, gh * 16) if mode == "training" or len(sources) > 1 or budget_grid else None
 
         if mask is not None and mask_list is not None:
             raise ValueError("Connect mask or mask_list, not both; their reference mapping is ambiguous.")
@@ -1892,37 +1896,17 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
         n_refs = len(sources)
         motion_applied = False
         motion_warned = False
-        # merge mode: hold each ref's pooled candidate + full encode, then
-        # refine one shared latent against all of them jointly after the loop
-        merge_refs = [] if (merge and mode == "training" and n_refs > 1) else None
+        merge_refs = [] if merging else None
         pbar = comfy.utils.ProgressBar(n_refs)
         for src_idx in range(len(sources)):
             src, is_video = sources[src_idx]
             label = f"ref {src_idx + 1}/{n_refs} ({'video' if is_video else 'image'})"
-            print(f"[MiniMaxH3RefModExtract] {label}: "
-                  f"source {tuple(src.shape)}, mode={mode}"
-                  + (f", identity={identity} steps" if mode == "training" and identity > 0 else ""))
-            if mode == "encode":
-                # downscale (never upscale) to the target short edge, sample
-                # videos to latent_frames frames, then encode at full res
-                if is_video:
-                    src = _sample_video_for_vae(src, latent_frames)
-                src = _resize_ref(src, ref_resolution, canvas)
-            else:
-                # training mode: encode smaller too — the latent is pooled
-                # to a tiny grid anyway, so encoding at native resolution is
-                # wasted compute. Resize preserves aspect, so the pool grid
-                # anchored on the first source's aspect still applies.
-                orig = (src.shape[1], src.shape[2])
-                src = _resize_ref(src, ref_resolution, None)
-                if (src.shape[1], src.shape[2]) != orig:
-                    print(f"[MiniMaxH3RefModExtract] {label}: resized "
-                          f"{orig[0]}x{orig[1]} -> {src.shape[1]}x{src.shape[2]} "
-                          f"(ref_resolution={ref_resolution}) before encode")
-            if motion_only and is_video and src.shape[0] > 1:
-                # temporal differences: |f[t+1] - f[t]|, normalized by the clip's
-                # peak motion so static frames stay dark ("no motion here") and
-                # moving parts light up — appearance never enters the latent
+            print(f"[MiniMaxH3RefModExtract] {label}: source {tuple(src.shape)}, mode={mode}")
+            if motion_only and is_video:
+                # temporal differences at the source frame rate: |f[t+1] - f[t]|,
+                # normalized by the clip's peak motion so static frames stay dark
+                # and moving parts light up — appearance never enters the latent
+                src = _resize_to_grid(src, gh, gw)
                 d = (src[1:] - src[:-1]).abs()
                 peak = d.max()
                 if peak > 1e-6:
@@ -1936,18 +1920,21 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                 print("[MiniMaxH3RefModExtract] warning: motion_only needs video "
                       "refs — a still has no motion, keeping its appearance.")
                 motion_warned = True
-            src = _ensure_min_size(src)
-            if is_video and src.shape[0] > 1:
-                aligned = _sample_video_for_vae(src)
-                if aligned.shape[0] != src.shape[0]:
-                    print(f"[MiniMaxH3RefModExtract] reference {src_idx + 1} "
-                          f"(video): sampling {src.shape[0]} -> {aligned.shape[0]} frames "
-                          f"on H3's 17k+5 grid (short clips use the first image).")
-                src = aligned
+            if is_video:
+                # sample on H3's 17k+5 grid before resizing (short clips use the first image)
+                sampled = _sample_video_for_vae(src, frame_cap)
+                if sampled.shape[0] != src.shape[0]:
+                    print(f"[MiniMaxH3RefModExtract] {label}: sampling {src.shape[0]} -> "
+                          f"{sampled.shape[0]} frames")
+                src = sampled
+            if mode == "encode":
+                src = _resize_ref(src, ref_resolution, canvas)
+            else:
+                src = _resize_to_grid(src, gh, gw)
             mask_px = None
             if masks is not None:
                 mask_px = _resize_mask(masks[src_idx], src.shape[1], src.shape[2],
-                                       "center" if mode == "encode" and canvas is not None else "disabled")
+                                       "center" if canvas is not None else "disabled")
             if src.shape[1] <= 0 or src.shape[2] <= 0:
                 raise ValueError(
                     f"MiniMaxH3RefModExtract: reference {src_idx + 1} "
@@ -1968,59 +1955,32 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                 print(f"[MiniMaxH3RefModExtract] {label}: applied subject mask "
                       f"(background_retention={background_retention})")
 
-            if mode == "encode":
-                pooled = z.to(torch.float16)
+            z = z.to(torch.float16)
+            if merge_refs is not None:
+                merge_refs.append(z.cpu())
             else:
-                pool_t = min(latent_frames, z.shape[2]) if is_video else 1
-                gh, gw = pool_grid if pool_grid is not None else (pool_h, pool_w)
-                pooled = pool_latent(z, pool_t, gh, gw).to(torch.float16)
-                if merge_refs is not None:
-                    merge_refs.append((pooled.cpu(), z.float().cpu()))
-                elif identity > 0:
-                    print(f"[MiniMaxH3RefModExtract] {label}: refining identity "
-                          f"({int(identity)} gradient steps)...")
-                    pooled = optimize_latent(pooled, z.float(), steps=int(identity),
-                                              progress_every=100)
-                    print(f"[MiniMaxH3RefModExtract] {label}: identity refinement done")
-            if merge_refs is None:
-                frames.append(pooled)
+                frames.append(z)
             if is_video:
                 n_vid += 1
             else:
                 n_img += 1
             pbar.update_absolute(src_idx + 1)
             print(f"[MiniMaxH3RefModExtract] {label}: encoded "
-                  f"{tuple(pooled.shape)} ({pooled.numel() * pooled.element_size() / 1024 / 1024:.2f} MB)")
-            # drop the decoded source and the full-res latent as soon as we're
-            # done with them, so a large folder doesn't keep every source +
-            # every full encode resident while the remaining refs are encoded
+                  f"{tuple(z.shape)} ({z.numel() * z.element_size() / 1024 / 1024:.2f} MB)")
+            # drop the source as soon as it is encoded, so a large folder
+            # doesn't keep every decoded source resident
             sources[src_idx] = None
             src = None
             z = None
 
-        if mode == "encode" and identity > 0:
-            print(f"[MiniMaxH3RefModExtract] warning: 'identity' only applies to "
-                  f"training mode — encode mode stores the actual encode, so "
-                  f"identity={identity} was ignored.")
-
         merged_n = 0
         if merge_refs is not None:
-            # one shared grid refined against every full encode jointly, so the
-            # result is the consensus of the collection, not any single shot
-            common_t = max(p.shape[2] for p, _ in merge_refs)
-            init = torch.stack([
-                pool_latent(p, common_t, gh, gw) for p, _ in merge_refs
-            ]).mean(0)
+            # the mean of every ref's encode on one time axis: what is common
+            # across the collection survives, single-shot framing averages away
+            common_t = max(z.shape[2] for z in merge_refs)
             print(f"[MiniMaxH3RefModExtract] merging {len(merge_refs)} references "
-                  f"into one shared {common_t}x{gh}x{gw} latent"
-                  + (f", {int(identity)} joint gradient steps" if identity > 0 else
-                     " (pure pooling mean — identity=0)"))
-            if identity > 0:
-                init = optimize_latent_multi(
-                    init, [f for _, f in merge_refs],
-                    steps=int(identity), progress_every=100)
-                print("[MiniMaxH3RefModExtract] merge refinement done")
-            latent = init.to(torch.float16)
+                  f"into one shared {common_t}x{gh}x{gw} latent")
+            latent = torch.stack([pool_latent(z, common_t, gh, gw).float() for z in merge_refs]).mean(0).to(torch.float16)
             merged_n = len(merge_refs)
         else:
             latent = torch.cat(frames, dim=2)  # [1, 24, total_t, h, w]
@@ -2061,7 +2021,6 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
             source=src,
             source_shape=" +".join(source_shapes),
             pool=f"full-res {px_w}x{px_h}px (short-edge cap {ref_resolution}px)" if mode == "encode" else f"{total_t}x{gh}x{gw}",
-            optimize_steps=int(identity) if mode == "training" else 0,
             tags=tags,
             description=(description or "").strip(),
             concept_type=concept_type,
@@ -2147,15 +2106,7 @@ class MiniMaxH3RefModInspect:
                 decoded = [vae_decode_audio(vae, {"samples": value})["waveform"] for value in variants]
                 audio = {"waveform": torch.cat(decoded, dim=-1), "sample_rate": 32000}
             else:
-                decoded = []
-                for value in variants:
-                    pixels = vae.decode(value)
-                    if pixels.ndim == 5 and pixels.shape[0] == 1:
-                        pixels = pixels[0]
-                    if pixels.ndim != 4 or pixels.shape[-1] != 3:
-                        raise ValueError(f"Expected H3 decoded RGB frames, got {tuple(pixels.shape)}.")
-                    decoded.append(pixels)
-                images = torch.cat(decoded, dim=0)
+                images = torch.cat([decode_visual(vae, value) for value in variants], dim=0)
         return (report, images, audio, reference_map(mods))
 
 

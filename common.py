@@ -147,8 +147,7 @@ def resize_ref(image, short_edge: int, canvas=None):
     canvas, so ``canvas`` (tw, th) cover-crops each ref to it (like the official
     node's follower keyframes).  Mirrors the official ref2video node: refs are
     resized before VAE encode, so the stored latent rides the same
-    full-resolution path the model was trained with (the pooled path below is
-    the cheap "thumbnail" alternative).
+    full-resolution path the model was trained with.
     """
     h, w = image.shape[1], image.shape[2]
     if h <= 0 or w <= 0:
@@ -177,6 +176,43 @@ def resize_ref(image, short_edge: int, canvas=None):
             f"in comfy.utils.common_upscale for this input, not in RefMod's "
             f"own math.")
     return samples.movedim(1, -1)
+
+
+def resize_to_grid(frames, grid_h: int, grid_w: int):
+    """Cover-crop ``[T, H, W, C]`` frames to a latent grid's pixel size (16 px per cell).
+
+    Downscales average the source pixels (area), which reconstructs through the
+    H3 VAE slightly better than Lanczos at grid sizes; upscales use Lanczos.
+    """
+    th, tw = grid_h * 16, grid_w * 16
+    if frames.shape[1] == th and frames.shape[2] == tw:
+        return frames[..., :3]
+    method = "area" if th <= frames.shape[1] and tw <= frames.shape[2] else "lanczos"
+    # chunked: a long full-resolution clip would otherwise be copied whole
+    return torch.cat([comfy.utils.common_upscale(chunk[..., :3].movedim(-1, 1), tw, th, method, "center").movedim(1, -1)
+                      for chunk in frames.split(16)])
+
+
+def latent_count(n_frames: int) -> int:
+    """H3 latent frames for a clip already on the 17k+5 grid (1 for a still)."""
+    return 1 if n_frames == 1 else (n_frames - 5) // 17 * 5 + 2
+
+
+def frames_for_latents(latent_frames: int) -> int:
+    """Most source frames whose encode yields at most ``latent_frames`` latents."""
+    return 1 if latent_frames < 2 else (latent_frames - 2) // 5 * 17 + 5
+
+
+def decode_visual(vae, latent):
+    """Decode a ``[1, 24, T, H, W]`` H3 latent to ``[frames, H, W, 3]``."""
+    single = latent.shape[2] == 1
+    # a lone latent frame decodes ~10 dB below frame 0 of a two-frame clip of it
+    pixels = vae.decode(latent.repeat(1, 1, 2, 1, 1) if single else latent)
+    if pixels.ndim == 5 and pixels.shape[0] == 1:
+        pixels = pixels[0]
+    if pixels.ndim != 4 or pixels.shape[-1] != 3 or pixels.shape[0] < 1:
+        raise ValueError(f"H3 video VAE must decode to [1, frames, height, width, 3] or [frames, height, width, 3]; got {tuple(pixels.shape)}.")
+    return pixels[:1].clone() if single else pixels
 
 
 def snap_to_causal_grid(n_frames: int) -> int:
@@ -209,29 +245,3 @@ def sample_video_for_vae(frames: torch.Tensor, max_frames: Optional[int] = None)
         return frames
     indices = torch.linspace(0, frames.shape[0] - 1, count, device=frames.device).round().long()
     return frames[indices]
-
-
-
-
-def ensure_min_size(image, floor: int = 320):
-    """Upscale (never downscale) so both spatial dims are >= ``floor`` px.
-
-    The MiniMax H3 VAE encodes with internal tiled_encode (~256px tiles). A
-    reference smaller than the tile size in one dimension can make the tiler
-    compute a zero-size edge tile, which crashes deep inside conv_in with a
-    cryptic 'Expected 4D or 5D... but got [1,3,1,0,W]' error. This applies
-    regardless of extraction mode ('encode' already resizes down to
-    ref_resolution but never guarantees a floor; 'training' now resizes to
-    the same cap, also without a floor), so it's a separate, unconditional
-    safety net right before encode.
-    """
-    import comfy.utils
-    h, w = image.shape[1], image.shape[2]
-    if h >= floor and w >= floor:
-        return image
-    scale = floor / min(h, w)
-    tw = max(floor, round(w * scale / 32) * 32)
-    th = max(floor, round(h * scale / 32) * 32)
-    samples = image[..., :3].movedim(-1, 1)
-    samples = comfy.utils.common_upscale(samples, tw, th, "lanczos", "disabled")
-    return samples.movedim(1, -1)

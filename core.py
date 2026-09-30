@@ -7,23 +7,21 @@ placed on the 3D RoPE grid, then every DiT block attends to it.  A video ref
 is expensive because it contributes thousands of tokens.
 
 Mode naming: ``encode`` (was ``full``) = straight full-res VAE encode;
-``training`` (was ``pooled``) = compressed grid refined by gradient steps
-(the only mode that "trains" — the refinement loop).  The old names are
-accepted everywhere as legacy aliases so saved workflows and mods keep
-working.
+``training`` (was ``pooled``) = compressed reference on a small grid.  The
+old names are accepted everywhere as legacy aliases so saved workflows and
+mods keep working.
 
-A RefMod is the same reference, compressed to a handful of tokens:
+A RefMod is the same reference, compressed to a handful of tokens: the ref is
+resized in pixel space to a small latent grid (16 px per cell) and fewer
+frames, then VAE-encoded at that size.  The DiT reads reference positions on
+an area-normalized RoPE grid, so a small real encode is a low-resolution copy
+of the same image, which reconstructs far closer to the source than pooling a
+full-resolution latent.
 
-  * the ref is VAE-encoded to its full latent [1, 24, T, H, W],
-  * the latent is average-pooled to a tiny grid (default 4x4) and a few
-    latent frames, so the patchified token count drops to ~4-16,
-  * optionally the small latent is refined with a few gradient steps that
-    reconstruct the full latent (still no model weights involved).
-
-At generation time the pooled latent is handed back to the model through the
-native ``refs`` payload, so it flows through the exact same per-block
-attention machinery as a full reference — the only thing that changes is the
-token budget.
+At generation time the latent is handed back to the model through the native
+``refs`` payload, so it flows through the exact same per-block attention
+machinery as a full reference — the only thing that changes is the token
+budget.
 
 This is the MiniMax H3 analog of the LTX "Mod" concept tokens + per-block
 injection: instead of a trained hypernetwork predicting AdaLN deltas, the
@@ -40,7 +38,6 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from safetensors import safe_open
 from safetensors.torch import load_file, save_file
@@ -169,6 +166,16 @@ def aspect_grid(pool_h: int, pool_w: int, aspect: float):
     return h, w
 
 
+def fit_grid(aspect: float, long_edge: int, max_h: float, max_w: float, frame_budget: int = 0):
+    """Largest ``aspect_grid`` up to ``long_edge`` that stays within ``max_h x max_w``
+    latent cells and, when ``frame_budget`` > 0, costs at most that many tokens per frame."""
+    for edge in range(long_edge - long_edge % 2, 1, -2):
+        h, w = aspect_grid(edge, edge, aspect)
+        if h <= max_h and w <= max_w and (frame_budget <= 0 or (h // 2) * (w // 2) <= frame_budget):
+            return h, w
+    return aspect_grid(2, 2, aspect)
+
+
 def pool_latent(
     z: torch.Tensor,
     latent_t: int,
@@ -176,12 +183,11 @@ def pool_latent(
     latent_w: int,
 ) -> torch.Tensor:
     """
-    Average-pool a VAE latent ``[1, 24, T, H, W]`` down to a tiny grid.
+    Average-pool a VAE latent ``[1, 24, T, H, W]`` to ``latent_t x latent_h x latent_w``.
 
-    ``latent_h/latent_w`` are the *latent* grid dims (the DiT patches each 2x2
-    latent cell into one token), so a 4x4 latent = 2x2 = 4 tokens per frame.
-    Dims must be even (the DiT's 2x2 patch).  Pooling runs in fp32; the result
-    keeps the input dtype.
+    Merge uses it to bring refs with different frame counts onto one time
+    axis.  Dims must be even (the DiT's 2x2 patch).  Pooling runs in fp32; the
+    result keeps the input dtype.
     """
     if z.shape[2] == latent_t and z.shape[3] == latent_h and z.shape[4] == latent_w:
         return z
@@ -192,98 +198,6 @@ def pool_latent(
     work = z.cpu() if z.device.type == "mps" else z
     pooled = F.adaptive_avg_pool3d(work.float(), (latent_t, latent_h, latent_w))
     return pooled.to(device=z.device, dtype=z.dtype)
-
-
-def optimize_latent(
-    z_small: torch.Tensor,
-    z_full: torch.Tensor,
-    steps: int = 150,
-    lr: float = 0.02,
-    device: Optional[torch.device] = None,
-    progress_every: int = 0,
-) -> torch.Tensor:
-    """
-    Model-free refinement of the compressed latent.
-
-    Optimizes the small latent so its trilinearly upsampled reconstruction
-    matches the full reference latent.  This pulls the pooled representation
-    closer to what the DiT would see from the full ref, with nothing but the
-    tiny latent trainable (~1-2K params) and no diffusion model loaded.
-
-    ``progress_every`` > 0 prints a ``[RefMod] identity <step>/<steps>`` line
-    every N steps so long pooled-mode refinement isn't silent (the default
-    ``identity=500`` takes a while per ref on CPU/VRAM-bound setups).
-
-    Returns the refined latent detached, same shape/dtype as ``z_small``.
-    """
-    if steps <= 0:
-        return z_small
-    device = device or z_full.device
-    # Node execution runs under ComfyUI's global inference mode, which would
-    # disable the autograd this refine loop needs.  Re-enable it for this
-    # scope and clone the inputs to drop the inference flag.
-    with torch.inference_mode(False), torch.set_grad_enabled(True):
-        target = z_full.clone().float().to(device)
-        param = nn.Parameter(z_small.clone().float().to(device))
-        opt = torch.optim.Adam([param], lr=lr)
-        size = tuple(target.shape[2:])
-        for i in range(steps):
-            opt.zero_grad()
-            up = F.interpolate(param, size=size, mode="trilinear", align_corners=False)
-            loss = F.mse_loss(up, target)
-            loss.backward()
-            opt.step()
-            if progress_every and (i + 1) % progress_every == 0:
-                print(f"[RefMod] identity {i + 1}/{steps}")
-        # materialize inside the scope so the result is a normal tensor, not
-        # an inference-mode tensor (it gets stored in the mod and reused)
-        refined = param.detach().to(z_small.dtype)
-    return refined
-
-
-def optimize_latent_multi(z_init, targets, steps=150, lr=0.02, device=None,
-                          progress_every=0, strategy="grouped"):
-    """Mean reconstruction objective with bounded activation memory.
-
-    grouped: average targets with identical shapes on CPU before refinement.
-    stream: transfer one target per gradient contribution.
-    resident: retain targets on the compute device, backward one at a time.
-    All strategies optimize the same mean MSE; grouping drops a constant term.
-    """
-    if not targets or steps <= 0:
-        return z_init
-    if strategy not in ("grouped", "stream", "resident"):
-        raise ValueError("Unknown multi-reference optimization strategy.")
-    device = device or z_init.device
-    with torch.inference_mode(False), torch.set_grad_enabled(True):
-        count = len(targets)
-        if strategy == "grouped":
-            groups = {}
-            for target in targets:
-                key = tuple(target.shape)
-                value = target.detach().to(device="cpu", dtype=torch.float32).clone()
-                if key in groups:
-                    groups[key][0].add_(value)
-                    groups[key][1] += 1
-                else:
-                    groups[key] = [value, 1]
-            prepared = [(total.div_(n), n / count) for total, n in groups.values()]
-        else:
-            target_device = device if strategy == "resident" else "cpu"
-            prepared = [(t.detach().to(device=target_device, dtype=torch.float32).clone(), 1 / count) for t in targets]
-        param = nn.Parameter(z_init.clone().float().to(device))
-        opt = torch.optim.Adam([param], lr=lr)
-        for i in range(steps):
-            opt.zero_grad()
-            for target, weight in prepared:
-                current = target.to(device)
-                up = F.interpolate(param, size=tuple(current.shape[2:]), mode="trilinear", align_corners=False)
-                (F.mse_loss(up, current) * weight).backward()
-                del up, current
-            opt.step()
-            if progress_every and (i + 1) % progress_every == 0:
-                print(f"[RefMod] merge {i + 1}/{steps}")
-        return param.detach().to(z_init.dtype)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -508,9 +422,9 @@ def fit_token_budget(latent: torch.Tensor, budget: int, label: str) -> torch.Ten
       2. budget-fit resample — uniformly subsample the remaining frames down
          to the largest count that fits the budget.
 
-    The spatial dims are never touched: resizing a latent's H/W changes the
-    rope grid and degrades the reference, so time is the only honest lever.
-    ``label`` is the mod name for the console notes.
+    The latent's spatial dims are never touched: resizing an encoded latent
+    degrades the reference, so the Create node shrinks the pixel grid before
+    encoding instead.  ``label`` is the mod name for the console notes.
     """
     if budget <= 0:
         return latent
@@ -552,15 +466,11 @@ class H3RefMod:
     A compressed reference for MiniMax H3.
 
     ``latent`` is the VAE latent ``[1, 24, latent_t, latent_h, latent_w]`` — a
-    full-resolution encode (``mode="encode"``) or a pooled thumbnail
-    (``mode="training"``).  ``kind`` is ``"image"`` (single latent frame) or
-    ``"video"`` (a few frames), matching the native ref block kinds the
-    model's ``PackedLayout`` understands.
-
-    ``mode="encode"`` stores the encode at the resolution the official ref2video
-    path uses, so the injected ref carries real identity detail;
-    ``mode="training"`` stores a tiny average-pooled grid refined by gradient
-    steps (concept/motion, or identity at high pool sizes).
+    full-resolution encode (``mode="encode"``) or the encode of a grid-sized
+    thumbnail (``mode="training"``; mods from 0.2.x hold a pooled latent).
+    ``kind`` is ``"image"`` (single latent frame) or ``"video"`` (a few
+    frames), matching the native ref block kinds the model's ``PackedLayout``
+    understands.
     """
 
     name: str
@@ -616,7 +526,7 @@ class H3RefMod:
         """
         Build the ref block dict the model's ``PackedLayout`` / payload consumes.
 
-        The shape mirrors what the native ref2va nodes emit, so the pooled
+        The shape mirrors what the native ref2va nodes emit, so the stored
         latent rides the exact same path: ``cond_video_latents`` -> patchify ->
         ``video_patch_proj`` -> packed sequence with a 3D RoPE grid.
 

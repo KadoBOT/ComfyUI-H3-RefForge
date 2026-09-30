@@ -6,6 +6,8 @@ import inspect
 from comfy.text_encoders.minimax import MiniMaxH3Tokenizer
 from comfy.ldm.minimax.vae import MiniMaxH3VideoVAE
 
+from .common import decode_visual
+
 
 def reference_map(mods):
     counters = {"image": 0, "video": 0, "audio": 0}
@@ -45,13 +47,7 @@ def prepare_references(mods, vae=None, reference_fps=24.0, max_total_tokens=0):
         if kind != "audio":
             # Decode the same weakened latent that the DiT receives. ComfyUI
             # owns device placement and its decode OOM/tiled fallback.
-            pixels = vae.decode(block["latent"])
-            # ComfyUI video VAEs return BTHWC; older wrappers may already
-            # expose THWC. Each RefMod is one video, never a batch of videos.
-            if pixels.ndim == 5 and pixels.shape[0] == 1:
-                pixels = pixels[0]
-            if pixels.ndim != 4 or pixels.shape[-1] != 3 or pixels.shape[0] < 1:
-                raise ValueError(f"H3 video VAE must decode to [1, frames, height, width, 3] or [frames, height, width, 3]; got {tuple(pixels.shape)}.")
+            pixels = decode_visual(vae, block["latent"])
             if kind == "image":
                 item["data"] = pixels[:1].cpu().clone()
             else:

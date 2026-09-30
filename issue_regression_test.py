@@ -85,7 +85,8 @@ class IssueRegressions(unittest.TestCase):
                 cls.execute("masked", mode="training", identity=0, refs_image=refs,
                             vae=vae, mask_list=collected, save=False)
             self.assertEqual(len(seen), 2)
-            self.assertEqual([tuple(m.shape) for m in seen], [(1,320,480),(1,480,320)])
+            # both refs are encoded on the first source's 4x6 grid
+            self.assertEqual([tuple(m.shape) for m in seen], [(1,64,96),(1,64,96)])
             self.assertEqual([m.mean().item() for m in seen], [0,1])
 
     def test_mask_list_consumed_once_by_comfy_execution(self):
@@ -158,8 +159,7 @@ class IssueRegressions(unittest.TestCase):
         vae = types.SimpleNamespace(encode=lambda pixels:
             seen.append(pixels.clone()) or torch.ones(1,24,7,4,4))
         # Isolate temporal policy from image-resize quantization.
-        with patch.object(N, '_resize_ref', side_effect=lambda src,*a:src), \
-                patch.object(N, '_ensure_min_size', side_effect=lambda src:src):
+        with patch.object(N, '_resize_ref', side_effect=lambda src,*a:src):
             for mode in ('encode', 'training'):
                 N.MiniMaxH3RefModExtract.execute(
                     'aligned', mode=mode, refs_video={'ref_video_0':clip},
@@ -170,15 +170,14 @@ class IssueRegressions(unittest.TestCase):
         clip = torch.linspace(0,1,23).square().reshape(23,1,1,1).expand(-1,32,32,3)
         seen = []
         vae = types.SimpleNamespace(encode=lambda pixels:
-            seen.append(pixels.clone()) or torch.ones(1,24,7,4,4))
-        with patch.object(N, '_resize_ref', side_effect=lambda src,*a:src), \
-                patch.object(N, '_ensure_min_size', side_effect=lambda src:src):
-            N.MiniMaxH3RefModExtract.execute(
-                'motion', mode='training', refs_video={'ref_video_0':clip},
-                vae=vae, latent_frames=2, identity=0, motion_only=True, save=False)
+            seen.append(pixels.clone()) or torch.ones(1,24,2,2,2))
+        N.MiniMaxH3RefModExtract.execute(
+            'motion', mode='training', refs_video={'ref_video_0':clip},
+            vae=vae, latent_frames=2, identity=0, motion_only=True, save=False)
         expected = (clip[1:]-clip[:-1]).abs()
         expected /= expected.max()
-        self.assertTrue(torch.equal(seen[-1], expected))
+        # two latent frames come from five source frames
+        self.assertTrue(torch.equal(seen[-1], COMMON.sample_video_for_vae(expected, 5)))
 
     def test_cli_samples_the_same_frames_as_the_node_helper(self):
         sys.path.insert(0, str(ROOT))
@@ -189,20 +188,76 @@ class IssueRegressions(unittest.TestCase):
         clip = torch.arange(101).reshape(101,1,1,1).expand(-1,32,32,3).float()/100
         seen = []
         vae = types.SimpleNamespace(throw_exception_if_invalid=lambda:None,
-            encode=lambda pixels:seen.append(pixels.clone()) or torch.ones(1,24,7,4,4))
-        with patch.object(cli, '_load_video', return_value=clip), \
-                patch.object(cli, '_resize_ref', side_effect=lambda src,*a:src), \
-                patch.object(cli, 'ensure_min_size', side_effect=lambda src:src), \
+            encode=lambda pixels:seen.append(pixels.clone()) or torch.ones(1,24,7,2,2))
+        with patch.object(COMMON, 'load_video_file', return_value=clip), \
+                patch.object(N, '_resize_ref', side_effect=lambda src,*a:src), \
                 patch.object(comfy.sd, 'VAE', return_value=vae), \
                 patch.object(comfy.utils, 'load_torch_file', return_value=({},{})):
-            for mode, limit in (('encode',16),('encode',22),('training',2)):
+            for mode, limit, frames in (('encode',16,16),('encode',22,22),('training',2,5),('training',7,22)):
                 argv = ['extract_mod.py','--video','test.mp4','--vae','stub.safetensors',
                         '--device','cpu','--mode',mode,'--latent-frames',str(limit),
-                        '--identity','0','--output',str(self.root),'--name','cli']
+                        '--output',str(self.root),'--name','cli']
                 with patch.object(sys, 'argv', argv):
                     cli.main()
-                expected = COMMON.sample_video_for_vae(clip,limit if mode=='encode' else None)
-                self.assertTrue(torch.equal(seen[-1], expected))
+                self.assertTrue(torch.equal(seen[-1], COMMON.sample_video_for_vae(clip, frames)))
+                self.assertTrue((self.root / 'cli.safetensors').exists())
+
+    def test_compressed_reference_encodes_the_resized_image_on_its_grid(self):
+        z = torch.randn(1,24,1,10,16)
+        seen = []
+        vae = types.SimpleNamespace(encode=lambda pixels: seen.append(pixels.shape) or z)
+        image = torch.rand(1,512,768,3)
+        mod = N.MiniMaxH3RefModExtract.execute(
+            'grid', mode='training', refs_image={'ref_image_1': image}, vae=vae, save=False)[0][0][0]
+        # a 16 grid fits a 2:3 source as 10x16 cells of 16 px; the encode is stored as is
+        self.assertEqual(seen, [(1,160,256,3)])
+        self.assertTrue(torch.equal(mod.latent, z.half()))
+        self.assertEqual((mod.latent_h, mod.latent_w, mod.optimize_steps), (10,16,0))
+
+    def test_compressed_grid_never_upscales_a_small_source(self):
+        seen = []
+        vae = types.SimpleNamespace(encode=lambda pixels:
+            seen.append(pixels.clone()) or torch.ones(1,24,1,pixels.shape[1]//16,pixels.shape[2]//16))
+        image = torch.rand(1,64,96,3)
+        mod = N.MiniMaxH3RefModExtract.execute(
+            'small', mode='training', refs_image={'ref_image_1': image}, vae=vae,
+            pool_h=32, pool_w=32, save=False)[0][0][0]
+        self.assertTrue(torch.equal(seen[0], image))
+        self.assertEqual((mod.latent_h, mod.latent_w), (4,6))
+
+    def test_image_stack_budget_shrinks_the_grid_instead_of_dropping_refs(self):
+        seen = []
+        vae = types.SimpleNamespace(encode=lambda pixels:
+            seen.append(pixels.shape) or torch.ones(1,24,1,pixels.shape[1]//16,pixels.shape[2]//16))
+        refs = {f'ref_image_{i}': torch.rand(1,256,256,3) for i in range(1, 5)}
+        for mode in ('training', 'encode'):
+            seen.clear()
+            mod = N.MiniMaxH3RefModExtract.execute(
+                'budget', mode=mode, refs_image=refs, vae=vae, max_tokens=100, save=False)[0][0][0]
+            self.assertEqual(mod.latent_t, 4)
+            self.assertEqual(mod.token_count, 100)
+            self.assertEqual(seen, [(1,160,160,3)] * 4)
+
+    def test_merge_averages_every_reference_encode(self):
+        values = iter((1.0, 3.0))
+        vae = types.SimpleNamespace(encode=lambda pixels: torch.full((1,24,1,4,4), next(values)))
+        refs = {'ref_image_1': torch.rand(1,64,64,3), 'ref_image_2': torch.rand(1,64,64,3)}
+        mod = N.MiniMaxH3RefModExtract.execute(
+            'merged', mode='training', refs_image=refs, vae=vae, merge=True, save=False)[0][0][0]
+        self.assertTrue(torch.equal(mod.latent, torch.full((1,24,1,4,4), 2.0).half()))
+
+    def test_decode_visual_decodes_a_lone_latent_as_a_two_frame_clip(self):
+        seen = []
+        def decode(latent):
+            seen.append(latent.shape[2])
+            frames = 1 if latent.shape[2] == 1 else (latent.shape[2] - 2) // 5 * 17 + 5
+            return torch.arange(frames).float().reshape(1,frames,1,1,1).expand(-1,-1,32,32,3)
+        vae = types.SimpleNamespace(decode=decode)
+        image = COMMON.decode_visual(vae, torch.zeros(1,24,1,2,2))
+        video = COMMON.decode_visual(vae, torch.zeros(1,24,7,2,2))
+        self.assertEqual(seen, [2, 7])
+        self.assertEqual((tuple(image.shape), image.max().item()), ((1,32,32,3), 0))
+        self.assertEqual(tuple(video.shape), (22,32,32,3))
 
 
 if __name__ == "__main__":

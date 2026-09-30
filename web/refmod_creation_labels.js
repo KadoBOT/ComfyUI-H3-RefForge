@@ -9,7 +9,7 @@ function updateLabels(node) {
         mode.value = modes[mode.value] ?? mode.value;
     }
     const steps = node.widgets?.find(widget => widget.name === "identity");
-    if (steps) steps.label = "Refinement Steps";
+    if (steps) steps.label = "Refinement Steps (unused)";
 }
 
 app.registerExtension({
