@@ -135,8 +135,9 @@ tokens) at 18.96 dB / 0.4632.
 - **Motion speed.** Clips are sampled uniformly over their length, so a long
   clip stored in few latents plays faster. Kept from upstream.
 - **Stacks are pseudo-videos.** Stacked images become consecutive latent
-  frames; Text Encode shows them to Qwen as one clip. Splitting them for the
-  DiT or for Qwen did not measurably help (see Tried and rejected).
+  frames; Text Encode shows them to Qwen as one clip, capped at 54 vision
+  tokens per frame since 0.3.1. Splitting them for the DiT or for Qwen did not
+  measurably help (see Tried and rejected).
 - **Audio.** Input is cut to `max_seconds`, encoded in independent 10 s chunks
   with no silence trimming, and the token budget keeps only the start. Not
   measured here.

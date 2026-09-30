@@ -11,6 +11,17 @@ fork or the original, not both: they register the same nodes.
 
 Support the original author: [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/C0C2EV9GW)
 
+## What's new — v0.3.1
+
+- **Smaller Qwen view of stacks** — Text Encode shows a stack to Qwen at no
+  more than 54 vision tokens per frame. For a six-photo person stack at grid 36
+  the reference's DiT and Qwen tokens drop from 1512 to 1350 and each render is
+  1.9 s faster, with no loss of face identity over 20 paired renders. The
+  default grid-16 view is unchanged.
+- **Render evaluation** — [EVALUATION.md](EVALUATION.md) measures face identity
+  in generated video. Describing the subject's appearance in the prompt raised
+  it by 0.019 at no token cost.
+
 ## What's new — v0.3.0
 
 - **Compressed References are grid-sized encodes** — each reference is resized
@@ -462,7 +473,8 @@ Visual presentation requires decoding the stored latent for Qwen; it adds VAE an
 vision-encoder work. Compressed latents reconstruct less detail than the original
 photos. A single-frame latent is decoded as a two-frame clip and its first frame
 kept, which the H3 VAE reconstructs far better than a lone latent. Videos are decoded and then sampled for Qwen at 2 fps; `reference_fps`
-sets reconstructed playback timing (default 24). Original timing is not recovered
+sets reconstructed playback timing (default 24). A stack's frames are
+area-downscaled to at most 54 Qwen tokens each (192×288 px at 2:3). Original timing is not recovered
 from pooled or stacked refs. Audio presentation uses the native numbered label
 without decoding audio. Loader strengths affect the latents; saved Apply curves
 and overrides are not applied by this node. `max_total_tokens` limits DiT reference

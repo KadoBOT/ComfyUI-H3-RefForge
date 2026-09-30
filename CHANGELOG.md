@@ -5,9 +5,10 @@ All notable changes are tracked here. Each version is also published as a
 so you can keep using an older version if a new one changes something you
 rely on.
 
-## Unreleased (RefForge)
+## v0.3.1 (RefForge)
 
-- Add EVALUATION.md: face identity in generated video for one person's photo stack, comparing Text Encode presentations, grids 24 and 36 and creation filters against 0.3.0. No code change passed; describing the subject's appearance in the prompt raised identity by 0.019 at no token cost, and the README now recommends it.
+- Cap a stack's Qwen view in Text Encode at 54 vision tokens per frame (192×288 px at 2:3, area downscaled). A six-still stack at grid 36 costs 1350 instead of 1512 DiT and Qwen tokens and renders 1.9 s faster, with face identity unchanged over 20 paired renders; the default grid-16 view is unchanged.
+- Add EVALUATION.md: face identity in generated video for one person's photo stack, comparing Text Encode presentations, grids 24 and 36 and creation filters against 0.3.0. Describing the subject's appearance in the prompt raised identity by 0.019 at no token cost, and the README now recommends it.
 
 ## v0.3.0 (RefForge)
 
