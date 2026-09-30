@@ -150,7 +150,8 @@ tokens) at 18.96 dB / 0.4632.
 - **Other packs.** ComfyUI-Fantastic-MiniMaxH3-PromptBuilder's
   `refmod_create.py` and `refmod_edit.py` carry copies of the 0.2.x pooling and
   refinement. ComfyUI-H3-Continuity finds the nodes by ID, but its
-  `tests/test_refmods.py` hardcodes the `ComfyUI-MiniMaxH3Mod` folder.
+  `tests/test_refmods.py` hardcodes the `ComfyUI-MiniMaxH3Mod` folder, and its
+  fake mod lacks the `source` attribute that Text Encode reads since 0.3.1.
 
 ## Reproduce
 
