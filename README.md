@@ -1,9 +1,15 @@
-# ComfyUI-MiniMaxH3Mod - Changing the F#cking world with cigarretes and coffe.
+# ComfyUI-H3-RefForge
+
+A fork of Luisa's [ComfyUI-MiniMaxH3Mod](https://github.com/Luisacaotica/ComfyUI-MiniMaxH3Mod)
+focused on RefMods that stay closer to their source at the same or a smaller
+reference-token cost. Node IDs, the file format and the `models/refmods` folder
+are unchanged, so existing mods and workflows keep working. Install either this
+fork or the original, not both: they register the same nodes.
 
 > 🚧 **Under construction** — API and node schemas are still evolving. Mods
 > stay compatible, but expect node names/inputs to shift between versions.
 
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/C0C2EV9GW)
+Support the original author: [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/C0C2EV9GW)
 
 ## What's new — v0.2.6
 
@@ -127,7 +133,7 @@ a candy racer in a karting scene.
    backends for the folder loader.
    
    ```bash
-   git clone https://github.com/Luisacaotica/ComfyUI-MiniMaxH3Mod custom_nodes/ComfyUI-MiniMaxH3Mod
+   git clone https://github.com/KadoBOT/ComfyUI-H3-RefForge custom_nodes/ComfyUI-H3-RefForge
    ```
 
 Originally tested on Windows. Bounded [Apple Silicon checks](#apple-silicon)
@@ -823,12 +829,12 @@ explicitly; the CLI default is `training`.
 
 ```bash
 # Store the VAE encode as an identity comparison baseline
-python custom_nodes/ComfyUI-MiniMaxH3Mod/extract_mod.py \
+python custom_nodes/ComfyUI-H3-RefForge/extract_mod.py \
     --image char.png --vae path/to/h3_video_vae.safetensors \
     --name my_character --mode encode --resolution 1024
 
 # Compressed video reference; evaluate motion loss against encode
-python custom_nodes/ComfyUI-MiniMaxH3Mod/extract_mod.py \
+python custom_nodes/ComfyUI-H3-RefForge/extract_mod.py \
     --video dance.mp4 --vae path/to/h3_video_vae.safetensors \
     --name dance --mode training --pool 16 --latent-frames 16 --identity 500
 ```

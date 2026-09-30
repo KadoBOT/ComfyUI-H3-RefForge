@@ -1,5 +1,6 @@
 """
-ComfyUI-MiniMaxH3Mod — no-training "RefMod" reference adapters for MiniMax H3
+ComfyUI-H3-RefForge — "RefMod" reference adapters for MiniMax H3
+(fork of Luisa's ComfyUI-MiniMaxH3Mod)
 
 Reference videos are expensive because they inject thousands of tokens into
 the H3 packed sequence.  A RefMod compresses a reference image/video into a

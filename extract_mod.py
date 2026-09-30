@@ -22,18 +22,18 @@ Two modes:
 Usage
 -----
   # full-res identity mod (recommended for characters)
-  python custom_nodes/ComfyUI-MiniMaxH3Mod/extract_mod.py \
+  python custom_nodes/ComfyUI-H3-RefForge/extract_mod.py \
       --image char.png --vae path/to/h3_video_vae.safetensors \
       --name my_character --mode encode --resolution 1024
 
   # tiny concept/motion mod
-  python custom_nodes/ComfyUI-MiniMaxH3Mod/extract_mod.py \
+  python custom_nodes/ComfyUI-H3-RefForge/extract_mod.py \
       --video dance.mp4 --vae path/to/h3_video_vae.safetensors \
       --name dance --mode training --pool 4 --latent-frames 2
 
 Multi-reference concept (each ref becomes its own latent frame):
 
-  python custom_nodes/ComfyUI-MiniMaxH3Mod/extract_mod.py \
+  python custom_nodes/ComfyUI-H3-RefForge/extract_mod.py \
       --image face_a.png --image face_b.png --image full.png \
       --video dance.mp4 --vae path/to/h3_video_vae.safetensors \
       --name disney_char --mode encode --resolution 1024
