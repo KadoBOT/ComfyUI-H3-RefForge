@@ -11,6 +11,16 @@ fork or the original, not both: they register the same nodes.
 
 Support the original author: [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/C0C2EV9GW)
 
+## What's new — v0.3.3
+
+- **Create's default grid is 36** — new Create and Master nodes encode a
+  Compressed Reference on a 36-cell grid instead of 16. For a person's photo
+  stack, grid 16 scored 0.148 lower in face identity; six photos now cost 1296
+  instead of 240 DiT tokens, about 4 s more per 512×768 render. Saved workflows
+  keep their values. Video references pay the grid on every latent frame (324
+  tokens per square frame at 36, 64 at 16); the `motion_sequence` preset still
+  uses 16.
+
 ## What's new — v0.3.2
 
 - **Descriptions in the reference map** — each map line ends with the RefMod's
@@ -687,7 +697,7 @@ same `retention` master control.
    Image slots use the first image of a batch; video slots preserve a sequence.
 2. Choose a name and optional subfolder. For a visual baseline, compare `encode`
    against `training` using the same refs and generation settings. The visual
-   node defaults are `training`, 16×16 grid, `latent_frames=16`,
+   node defaults are `training`, 36×36 grid, `latent_frames=16`,
    `ref_resolution=1024`, and `max_tokens=5120`; presets can override some of them.
 3. Connect the output bundle directly to **Apply H3 RefMod**, or load the saved
    file(s) with **Load H3 RefMods**. Connect your H3 conditioning to Apply and

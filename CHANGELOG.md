@@ -5,6 +5,10 @@ All notable changes are tracked here. Each version is also published as a
 so you can keep using an older version if a new one changes something you
 rely on.
 
+## v0.3.3 (RefForge)
+
+- Default Create H3 RefMod's and Master's Compressed Reference grid (`pool_h`, `pool_w`) to 36 instead of 16. For one person's six-photo stack, grid 16 scored 0.148 below 36 in face identity; the stack costs 1296 instead of 240 DiT tokens, about 4 s more per 512×768 render. Saved workflows keep their values, and old single-`pool` workflows still get a square grid. Video references pay the grid on every latent frame; the `motion_sequence` preset still uses 16.
+
 ## v0.3.2 (RefForge)
 
 - Append each RefMod's description to its reference-map line (`<Picture 1> = alice: adult woman with long brown hair`), so a description written at creation reaches an LLM prompt writer.

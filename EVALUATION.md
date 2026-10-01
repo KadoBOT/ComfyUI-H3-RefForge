@@ -104,7 +104,7 @@ the same prompt (1296 + 54 tokens, 0.694 / 0.606, 36.0 s per render), n = 6:
 
 | Change | DiT + Qwen tokens | Identity Δ (95% CI) | t | s/render |
 | --- | ---: | --- | ---: | ---: |
-| Grid 16 (Create's default pool) | 240 + 40 | −0.148 (−0.194, −0.103) | −8.38 | 32.0 |
+| Grid 16 (Create's default before 0.3.3) | 240 + 40 | −0.148 (−0.194, −0.103) | −8.38 | 32.0 |
 | Grid 24 | 576 + 54 | −0.062 (−0.099, −0.025) | −4.29 | 33.4 |
 | Grid 30 | 900 + 54 | −0.021 (−0.054, +0.012) | −1.66 | 34.8 |
 | Grid 48 | 2304 + 54 | +0.029 (+0.005, +0.053) | 3.11 | 41.0 |
@@ -169,10 +169,10 @@ re-rendered in the same session, n = 6:
   0.010–0.027 lower with 576 + 576 tokens, and Apply alone was not measurably
   worse than Text Encode once the appearance was described. Identity rose with
   every grid step up to 48 (+0.029 over 36, for 1008 more tokens and 5 s per
-  render); the default grid 16 lost 0.148. Larger encodes, including the
-  `identity_encode` preset, cost about 4000 tokens and 8 s more per render
-  without a measurable gain over 48. Grid 48 is 768 px, the long side of these
-  renders; whether the knee follows the render size was not tested.
+  render); grid 16, the default before 0.3.3, lost 0.148. Larger encodes,
+  including the `identity_encode` preset, cost about 4000 tokens and 8 s more
+  per render without a measurable gain over 48. Grid 48 is 768 px, the long side
+  of these renders; whether the knee follows the render size was not tested.
 - **Six stills are more than enough.** Leaving any one out changed identity by
   −0.019 to +0.007, none significantly, and saved 216 tokens. Four stills at
   grid 48 were not measurably worse than all six squeezed into the same budget,
