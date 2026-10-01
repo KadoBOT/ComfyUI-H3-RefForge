@@ -32,7 +32,9 @@ def reference_map(mods):
         if strength == 0:
             continue
         counters[mod.kind] += 1
-        mapping.append(f"<{labels[mod.kind]} {counters[mod.kind]}> = {mod.name}")
+        label = f"<{labels[mod.kind]} {counters[mod.kind]}> = {mod.name}"
+        description = " ".join(mod.description.split())
+        mapping.append(f"{label}: {description}" if description else label)
     return "\n".join(mapping) or "No active RefMods."
 
 

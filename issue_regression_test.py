@@ -279,6 +279,15 @@ class IssueRegressions(unittest.TestCase):
         self.assertEqual(view('video', 36, 24), (2,576,384,3))
         self.assertEqual(view('stack', 16, 10), (2,256,160,3))
 
+    def test_reference_map_carries_each_description_on_one_line(self):
+        def mod(name, kind, description):
+            latent = torch.zeros(1,32,2,4) if kind == 'audio' else torch.zeros(1,24,1,2,2)
+            return CORE.H3RefMod(name=name, kind=kind, latent=latent, description=description)
+        mods = [(mod('alice', 'image', 'adult woman,\n  long brown hair'), 1.0), (mod('room', 'image', ' '), 0.5),
+                (mod('voice', 'audio', 'warm low voice'), 1.0), (mod('off', 'image', 'unused'), 0.0)]
+        self.assertEqual(PROMPT.reference_map(mods), "<Picture 1> = alice: adult woman, long brown hair\n"
+                         "<Picture 2> = room\n<Audio 1> = voice: warm low voice")
+
 
 if __name__ == "__main__":
     unittest.main()

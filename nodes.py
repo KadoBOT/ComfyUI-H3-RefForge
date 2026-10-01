@@ -1729,7 +1729,8 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                 io.String.Input("description", default="", multiline=True,
                     tooltip="Optional text describing the concept (e.g. 'a ginger woman with messy "
                             "hair', 'an animation style', 'handheld camera movement'). Stored in "
-                            "the mod and printed in the info block — documentation only, no wiring."),
+                            "the mod and included in the loaders' prompt_hint and the reference map; "
+                            "not a trigger."),
                 io.Boolean.Input("save", default=True, label_on="save", label_off="don't save",
                     tooltip="Save the mod to mods/ so Load H3 RefMods can pick it up later."),
                 io.Custom("H3_MASK_LIST").Input("mask_list", optional=True,

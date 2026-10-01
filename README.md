@@ -467,7 +467,9 @@ Describe how each subject looks in the prompt, not only which reference shows
 them, for example `<Subject 1> is an adult woman with long brown hair and brown
 eyes, the same woman shown in all the views in <Video 1>.` In a render test with
 a six-photo stack this raised face identity by 0.019 over the label alone, at no
-token cost.
+token cost. Each map line ends with the RefMod's description when it has one
+(`<Picture 1> = alice: adult woman with long brown hair`), so a description
+written at creation reaches an LLM prompt writer.
 
 Visual presentation requires decoding the stored latent for Qwen; it adds VAE and
 vision-encoder work. Compressed latents reconstruct less detail than the original
