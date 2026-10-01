@@ -1255,7 +1255,7 @@ class MiniMaxH3RefModConfig:
                                "makes THIS concept work (1.0 = fully_preserved, 0.7 = "
                                "partially_preserved, 0.4 = attribute_transfer, 0.15 = "
                                "weak_reference)."}),
-                "curve_direction": (list(CURVE_DIRECTIONS), {"default": "concept_at_end",
+                "curve_direction": (list(CURVE_DIRECTIONS), {"default": "constant",
                     "tooltip": "The Apply frame-curve direction this concept needs (same list as "
                                "Apply H3 RefMod)."}),
                 "curve_shape": (list(CURVE_SHAPES), {"default": "ease",
@@ -1263,7 +1263,7 @@ class MiniMaxH3RefModConfig:
                 "curve_value": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,
                     "display": "number",
                     "tooltip": "Apply curve endpoint value (1.0 = full strength there)."}),
-                "step_curve_direction": (list(CURVE_DIRECTIONS), {"default": "concept_at_end",
+                "step_curve_direction": (list(CURVE_DIRECTIONS), {"default": "constant",
                     "tooltip": "The H3 RefMod Step Curve direction this concept needs (over the "
                                "denoise timeline)."}),
                 "step_curve_shape": (list(CURVE_SHAPES), {"default": "ease",
@@ -1279,9 +1279,9 @@ class MiniMaxH3RefModConfig:
     FUNCTION = "fix"
     CATEGORY = "MiniMax-H3/mod"
 
-    def fix(self, mods, retention=1.0, curve_direction="concept_at_end",
+    def fix(self, mods, retention=1.0, curve_direction="constant",
             curve_shape="ease", curve_value=1.0,
-            step_curve_direction="concept_at_end", step_curve_shape="ease",
+            step_curve_direction="constant", step_curve_shape="ease",
             step_curve_value=1.0):
         cfg = {
             "retention": min(1.0, max(0.0, float(retention))),
