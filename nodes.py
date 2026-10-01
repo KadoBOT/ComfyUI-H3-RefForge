@@ -1667,14 +1667,14 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                             "cost, 2048 = official max fidelity at 4x the tokens of 1024. Compressed "
                             "Reference never uses more than ref_resolution/16 latent cells on the "
                             "short edge."),
-                io.Int.Input("pool_h", default=16, min=2, max=64, step=2,
+                io.Int.Input("pool_h", default=36, min=2, max=64, step=2,
                     tooltip="Compressed Reference: latent grid (16 px per cell) the refs are resized "
                             "to and encoded at. The grid is auto-fit to the source's aspect ratio "
                             "(long edge = max of the two dials, other edge derived), so a portrait "
                             "person isn't squished into a square grid, and is never finer than the "
                             "source's own pixels. Square sources keep the exact dial value. "
-                            "16x16 = 64 tokens/frame; 32x32 = 256; 64x64 = 1024."),
-                io.Int.Input("pool_w", default=16, min=2, max=64, step=2,
+                            "16x16 = 64 tokens/frame; 36x36 (default) = 324; 64x64 = 1024."),
+                io.Int.Input("pool_w", default=36, min=2, max=64, step=2,
                     tooltip="Compressed Reference: grid width (long edge if the source is wider than tall)."),
                 io.Int.Input("latent_frames", default=16, min=1, max=2147483647,
                     tooltip="Per-video temporal limit. Full Reference samples up to this many source frames "
@@ -1749,7 +1749,7 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
     @classmethod
     def execute(cls, name, mode, refs_image=None, refs_video=None, refs_bundle=None,
                 av_encoder=None, vae=None,
-                ref_resolution=1024, pool_h=16, pool_w=16, latent_frames=16,
+                ref_resolution=1024, pool_h=36, pool_w=36, latent_frames=16,
                 identity=500, multiplier=1, max_tokens=0, description="", save=True,
                 concept_type="generic", mask=None, background_retention=0.0, subfolder="",
                 merge=False, motion_only=False, extraction_preset="manual", budget_policy="truncate", mask_list=None, **legacy) -> io.NodeOutput:
@@ -1761,7 +1761,7 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
         # ``pool`` is the old height; ``pool_w`` arrives as the named param.
         if legacy.get("pool") is not None:
             pool_h = int(legacy["pool"])
-            if pool_w == 16:  # old single-pool default: square grid
+            if pool_w == 36:  # pool_w left at its default: the old single pool was square
                 pool_w = pool_h
         preset_replaced = ""
         if extraction_preset == "identity_encode":

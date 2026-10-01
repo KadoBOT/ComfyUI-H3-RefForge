@@ -211,11 +211,21 @@ class IssueRegressions(unittest.TestCase):
         vae = types.SimpleNamespace(encode=lambda pixels: seen.append(pixels.shape) or z)
         image = torch.rand(1,512,768,3)
         mod = N.MiniMaxH3RefModExtract.execute(
-            'grid', mode='training', refs_image={'ref_image_1': image}, vae=vae, save=False)[0][0][0]
+            'grid', mode='training', refs_image={'ref_image_1': image}, vae=vae,
+            pool_h=16, pool_w=16, save=False)[0][0][0]
         # a 16 grid fits a 2:3 source as 10x16 cells of 16 px; the encode is stored as is
         self.assertEqual(seen, [(1,160,256,3)])
         self.assertTrue(torch.equal(mod.latent, z.half()))
         self.assertEqual((mod.latent_h, mod.latent_w, mod.optimize_steps), (10,16,0))
+
+    def test_legacy_single_pool_keeps_a_square_grid(self):
+        seen = []
+        vae = types.SimpleNamespace(encode=lambda pixels:
+            seen.append(pixels.shape) or torch.ones(1,24,1,pixels.shape[1]//16,pixels.shape[2]//16))
+        N.MiniMaxH3RefModExtract.execute(
+            'legacy', mode='training', refs_image={'ref_image_1': torch.rand(1,256,256,3)}, vae=vae,
+            pool=8, save=False)
+        self.assertEqual(seen, [(1,128,128,3)])
 
     def test_compressed_grid_never_upscales_a_small_source(self):
         seen = []
