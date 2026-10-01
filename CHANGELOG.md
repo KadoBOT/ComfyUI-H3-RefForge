@@ -5,6 +5,12 @@ All notable changes are tracked here. Each version is also published as a
 so you can keep using an older version if a new one changes something you
 rely on.
 
+## v0.3.2 (RefForge)
+
+- Append each RefMod's description to its reference-map line (`<Picture 1> = alice: adult woman with long brown hair`), so a description written at creation reaches an LLM prompt writer.
+- Default Fix H3 RefMod Config's saved Apply and Step Curve directions to `constant`, like Apply and Step Curve. With `override`, the old `concept_at_end` step curve kept the reference at 0–31% strength over an 8-step H3 run and cost 0.30 face identity.
+- EVALUATION.md: grids 16–64 and the `identity_encode` preset, leaving one photo out, loader strength, step curves and removing references late in denoising. Face identity rose with the grid up to 48 cells and needed the reference until the last steps.
+
 ## v0.3.1 (RefForge)
 
 - Cap a stack's Qwen view in Text Encode at 54 vision tokens per frame (192×288 px at 2:3, area downscaled). A six-still stack at grid 36 costs 1350 instead of 1512 DiT and Qwen tokens and renders 1.9 s faster, with face identity unchanged over 20 paired renders; the default grid-16 view is unchanged.

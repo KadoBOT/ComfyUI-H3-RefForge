@@ -11,6 +11,17 @@ fork or the original, not both: they register the same nodes.
 
 Support the original author: [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/C0C2EV9GW)
 
+## What's new — v0.3.2
+
+- **Descriptions in the reference map** — each map line ends with the RefMod's
+  description, for example `<Picture 1> = alice: adult woman with long brown hair`.
+- **Fix H3 RefMod Config saves constant curves by default** — its old
+  `concept_at_end` step curve, loaded with `override`, blurred the reference
+  for a whole 8-step H3 run and cost 0.30 face identity.
+- **Grid guidance** — for a person's photo stack, face identity in generated
+  video rose with the grid up to 48 cells; the default 16 scored 0.148 below
+  grid 36. See [EVALUATION.md](EVALUATION.md).
+
 ## What's new — v0.3.1
 
 - **Smaller Qwen view of stacks** — Text Encode shows a stack to Qwen at no
@@ -395,9 +406,12 @@ A small grid is spatial compression, **not a concept extractor**. It may retain
 colors and large structures while losing face detail, texture or useful motion.
 A larger grid preserves more information, including unwanted content. There
 is no validated universal 8×8 concept / 16×16 identity sweet spot. For one
-person's six-photo stack, a 36-cell grid (1296 tokens) gave 0.022–0.042 higher
-face identity in generated video than a 24-cell grid (576 tokens); see
-[EVALUATION.md](EVALUATION.md).
+person's six-photo stack rendered at 512×768, face identity in generated video
+rose with the grid up to 48 cells: compared with 36 cells (1296 tokens), 16
+cells scored 0.148 lower, 24 cells 0.062 lower and 48 cells (2304 tokens) 0.029
+higher. Larger encodes, including the `identity_encode` preset, cost about
+4000 tokens without a measurable gain over 48. Five of the six photos gave the
+same likeness as all six. See [EVALUATION.md](EVALUATION.md).
 
 `multiplier` repeats the extracted visual latent along its time axis; loader
 `copies` repeats a reference block. Both increase token cost. Neither adds new
@@ -608,6 +622,12 @@ It applies an envelope over denoising progress, relative to the run's schedule
 start. This is different from the reference-frame curve and from output time.
 Early/late weighting can change the result, but there is no guarantee that it
 isolates composition, identity, texture or any particular semantic attribute.
+
+Progress is 1 − sigma relative to the schedule start. H3 samples with a shift
+of 12, so sigma stays high: an 8-step run ends at progress 0.37 and a 30-step
+run at 0.70, and a curve's late end is never reached. In the face-identity test
+in [EVALUATION.md](EVALUATION.md), the face formed in the last steps: removing
+the reference after five of eight steps lost most of the likeness.
 
 The wrapper processes the current payload without retaining reference tensors
 between calls. It transforms only marked RefMod references; empty payloads pass

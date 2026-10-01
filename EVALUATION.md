@@ -5,6 +5,9 @@ differently, and can the same likeness cost fewer tokens? [AUDIT.md](AUDIT.md)
 scores the stored latent; this scores the generated video. The baseline is
 RefForge 0.3.0 (`a9d8809`). One change passed and ships in 0.3.1: Text Encode
 shows a stack to Qwen at no more than 54 vision tokens per frame.
+[Grid, photos and strength](#grid-photos-and-strength) measures the 0.3.1
+build: the grid sets the likeness up to 48 cells, and the reference is needed
+until the last denoising steps.
 
 ## Setup
 
@@ -12,7 +15,8 @@ shows a stack to Qwen at no more than 54 vision tokens per frame.
   shots, one full-length shot) stacked into one Compressed Reference by the
   0.3.0 Create node: grid 36 (36×24 cells, 1296 DiT tokens) and grid 24 (24×16
   cells, 576 tokens). Creating them again with the tested build gave
-  bit-identical latents.
+  bit-identical latents. The 0.3.1 Create node made the other grids, the
+  `identity_encode` preset and the five-still stacks from the same stills.
 - **Renders.** H3 ref2va and Qwen3-VL text encoder (both int8), 512×768, 73
   frames, 8 Euler steps, no CFG. Two prompts in H3's section format, a portrait
   and a full-body shot, with three seeds each; the grid-36 rows with n = 10
@@ -92,6 +96,39 @@ same prompt:
 | Grid 24, 0.3.0 | 576 + 96 | −0.042 | −4.51 | 6 |
 | Grid 24, a block per still, 96 tokens | 576 + 576 | −0.027 | −2.27 | 6 |
 
+## Grid, photos and strength
+
+0.3.1 Text Encode with the appearance described, compared with grid 36 under
+the same prompt (1296 + 54 tokens, 0.694 / 0.606, 36.0 s per render), n = 6:
+
+| Change | DiT + Qwen tokens | Identity Δ (95% CI) | t | s/render |
+| --- | ---: | --- | ---: | ---: |
+| Grid 16 (Create's default pool) | 240 + 40 | −0.148 (−0.194, −0.103) | −8.38 | 32.0 |
+| Grid 24 | 576 + 54 | −0.062 (−0.099, −0.025) | −4.29 | 33.4 |
+| Grid 30 | 900 + 54 | −0.021 (−0.054, +0.012) | −1.66 | 34.8 |
+| Grid 48 | 2304 + 54 | +0.029 (+0.005, +0.053) | 3.11 | 41.0 |
+| Pool 64, capped at 62×42 by the 680×1020 px first still | 3906 + 54 | +0.034 (+0.015, +0.053) | 4.54 | 49.2 |
+| `identity_encode` preset (Full Reference, 64×42) | 4032 + 54 | +0.031 (+0.007, +0.055) | 3.28 | 49.7 |
+| One still left out, each of the six | 1080 + 54 | −0.019 to +0.007 | −1.51 to 0.64 | 35.7 |
+| Loader strength 0.8 | 1296 + 54 | +0.016 (−0.004, +0.036) | 2.12 | 36.3 |
+| Step Curve `concept_at_start`, `ease` | 1296 + 54 | +0.001 (−0.006, +0.007) | 0.32 | 36.3 |
+| Step Curve `concept_at_end`, `ease` | 1296 + 54 | −0.299 (−0.420, −0.178) | −6.35 | 36.4 |
+
+Against grid 48, the 62×42 encode scored +0.005 (t 0.93) and the preset +0.002
+(t 0.21). Step Curve's progress is 1 − sigma relative to the schedule start.
+H3 samples with a shift of 12, so the eight steps run at sigma 1.0 to 0.63 and
+progress ends at 0.37: `concept_at_start` kept the reference at 0.69–1.0
+strength and `concept_at_end` at 0–0.31.
+
+An experimental Step Curve build, not shipped, removed marked references from
+the DiT sequence after part of the schedule. Grid 48, compared with grid 48
+re-rendered in the same session, n = 6:
+
+| References removed after | Steps with references | Identity Δ (95% CI) | t | Time Δ (95% CI) |
+| --- | ---: | --- | ---: | --- |
+| 50% of the schedule (sigma < 0.923) | 5 of 8 | −0.295 (−0.347, −0.244) | −14.7 | −0.1 s (−6.5, +6.3) |
+| 25% (sigma < 0.973) | 3 of 8 | −0.389 (−0.455, −0.324) | −15.3 | −10.1 s (−13.9, −6.4) |
+
 ## Findings
 
 - **Describe the subject.** Adding the appearance ("an adult woman with long
@@ -110,10 +147,25 @@ same prompt:
   0.3.0 view instead kept the likeness and ships in 0.3.1.
 - **One clip for the DiT.** Splitting a stack into six picture blocks did not
   help (−0.018 at grid 36, −0.020 at grid 24, both with Apply only).
-- **DiT tokens carry the likeness.** Grid 24 scored 0.022–0.042 below grid 36.
-  The best grid-24 Qwen view, 96 tokens per still, still scored 0.010–0.027
-  lower with 576 + 576 tokens, and Apply alone was not measurably worse than
-  Text Encode once the appearance was described.
+- **DiT tokens carry the likeness, up to grid 48.** Grid 24 scored 0.022–0.042
+  below grid 36. The best grid-24 Qwen view, 96 tokens per still, still scored
+  0.010–0.027 lower with 576 + 576 tokens, and Apply alone was not measurably
+  worse than Text Encode once the appearance was described. Identity rose with
+  every grid step up to 48 (+0.029 over 36, for 1008 more tokens and 5 s per
+  render); the default grid 16 lost 0.148. Larger encodes, including the
+  `identity_encode` preset, cost about 4000 tokens and 8 s more per render
+  without a measurable gain over 48. Grid 48 is 768 px, the long side of these
+  renders; whether the knee follows the render size was not tested.
+- **Six stills are more than enough.** Leaving any one out changed identity by
+  −0.019 to +0.007, none significantly, and saved 216 tokens.
+- **The reference is needed until the last steps.** At H3's shift of 12 the
+  first five of eight steps run at sigma 0.92 or above. Removing the reference
+  after them lost 0.295, and after three steps 0.389, close to rendering
+  without one. The renders kept the pose, hair and lighting; the face drifted.
+  A weaker reference cost little: loader strength 0.8 and `concept_at_start`
+  (0.69–1.0) were not measurably worse, while `concept_at_end`, which blurs the
+  reference to 0–0.31 for the whole run, lost 0.299. Fix H3 RefMod Config
+  saved that curve by default; it saves `constant` since 0.3.2.
 - **Creation is unchanged.** Through a real VAE round trip, area downscaling
   kept the most facial identity (SFace of the decode against the source: 0.851
   at grid 36, 0.779 at grid 24). Lanczos, antialiased bicubic and an unsharp
@@ -124,7 +176,9 @@ same prompt:
 One person, stacks of stills, two prompts, 6–10 paired renders per row: the
 paired sd is 0.01–0.04, so differences under about 0.015 are not resolved.
 SFace measures face identity only, not body, hair, clothing or style. Single
-images, videos, Full References, bundles and other grids were not rendered.
-Times compare ComfyUI sessions on the same machine; the 0.3.0 renders ran in an
-earlier one. The harness is not included: it needs the private source stills
-and the YuNet and SFace models.
+images, videos, bundles, other render sizes and other step counts were not
+rendered. Times compare ComfyUI sessions on the same machine; the 0.3.0 renders
+ran in an earlier one. The removal renders ran in a session where grid 48 took
+48.5 s instead of 41.0 s with identical output, so they are timed against grid
+48 re-rendered in that session. The harness is not included: it needs the
+private source stills and the YuNet and SFace models.
