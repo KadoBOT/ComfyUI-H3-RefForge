@@ -411,7 +411,9 @@ rose with the grid up to 48 cells: compared with 36 cells (1296 tokens), 16
 cells scored 0.148 lower, 24 cells 0.062 lower and 48 cells (2304 tokens) 0.029
 higher. Larger encodes, including the `identity_encode` preset, cost about
 4000 tokens without a measurable gain over 48. Five of the six photos gave the
-same likeness as all six. See [EVALUATION.md](EVALUATION.md).
+same likeness as all six, and four at grid 48 the same as all six shrunk to
+their budget by `max_tokens`; three lost likeness. See
+[EVALUATION.md](EVALUATION.md).
 
 `multiplier` repeats the extracted visual latent along its time axis; loader
 `copies` repeats a reference block. Both increase token cost. Neither adds new
@@ -626,8 +628,9 @@ isolates composition, identity, texture or any particular semantic attribute.
 Progress is 1 − sigma relative to the schedule start. H3 samples with a shift
 of 12, so sigma stays high: an 8-step run ends at progress 0.37 and a 30-step
 run at 0.70, and a curve's late end is never reached. In the face-identity test
-in [EVALUATION.md](EVALUATION.md), the face formed in the last steps: removing
-the reference after five of eight steps lost most of the likeness.
+in [EVALUATION.md](EVALUATION.md), the reference was needed at every step:
+removing it after five of eight steps lost most of the likeness, and adding it
+only from the fifth step lost 0.034.
 
 The wrapper processes the current payload without retaining reference tensors
 between calls. It transforms only marked RefMod references; empty payloads pass

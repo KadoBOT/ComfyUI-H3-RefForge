@@ -7,7 +7,7 @@ RefForge 0.3.0 (`a9d8809`). One change passed and ships in 0.3.1: Text Encode
 shows a stack to Qwen at no more than 54 vision tokens per frame.
 [Grid, photos and strength](#grid-photos-and-strength) measures the 0.3.1
 build: the grid sets the likeness up to 48 cells, and the reference is needed
-until the last denoising steps.
+at every denoising step.
 
 ## Setup
 
@@ -16,7 +16,8 @@ until the last denoising steps.
   0.3.0 Create node: grid 36 (36×24 cells, 1296 DiT tokens) and grid 24 (24×16
   cells, 576 tokens). Creating them again with the tested build gave
   bit-identical latents. The 0.3.1 Create node made the other grids, the
-  `identity_encode` preset and the five-still stacks from the same stills.
+  `identity_encode` preset, the smaller stacks and the `max_tokens` stack from
+  the same stills.
 - **Renders.** H3 ref2va and Qwen3-VL text encoder (both int8), 512×768, 73
   frames, 8 Euler steps, no CFG. Two prompts in H3's section format, a portrait
   and a full-body shot, with three seeds each; the grid-36 rows with n = 10
@@ -120,14 +121,30 @@ H3 samples with a shift of 12, so the eight steps run at sigma 1.0 to 0.63 and
 progress ends at 0.37: `concept_at_start` kept the reference at 0.69–1.0
 strength and `concept_at_end` at 0–0.31.
 
-An experimental Step Curve build, not shipped, removed marked references from
-the DiT sequence after part of the schedule. Grid 48, compared with grid 48
+Fewer stills or a smaller grid, compared with all six stills at grid 48
+(2304 + 54 tokens, 0.671), n = 6:
+
+| Stack | DiT + Qwen tokens | Identity Δ (95% CI) | t |
+| --- | ---: | --- | ---: |
+| The two close-ups and two frontal medium shots | 1536 + 54 | −0.013 (−0.040, +0.013) | −1.31 |
+| All six, `max_tokens` 1536 with `truncate` (the grid shrinks to 38×26) | 1482 + 54 | −0.032 (−0.067, +0.003) | −2.35 |
+| The two close-ups and one medium shot | 1152 + 54 | −0.044 (−0.085, −0.002) | −2.70 |
+
+At about the same budget, the four stills scored +0.019 (−0.020, +0.057; t 1.25)
+over all six on the smaller grid. All three stacks scored within 0.015 of six
+stills at grid 36 (1296 tokens).
+
+Two experimental Step Curve builds, not shipped, kept marked references out of
+the DiT sequence for part of the schedule. Grid 48, compared with grid 48
 re-rendered in the same session, n = 6:
 
-| References removed after | Steps with references | Identity Δ (95% CI) | t | Time Δ (95% CI) |
+| References in the sequence | Steps with references | Identity Δ (95% CI) | t | Time Δ (95% CI) |
 | --- | ---: | --- | ---: | --- |
-| 50% of the schedule (sigma < 0.923) | 5 of 8 | −0.295 (−0.347, −0.244) | −14.7 | −0.1 s (−6.5, +6.3) |
-| 25% (sigma < 0.973) | 3 of 8 | −0.389 (−0.455, −0.324) | −15.3 | −10.1 s (−13.9, −6.4) |
+| Until 50% of the schedule (sigma ≥ 0.923) | 5 of 8 | −0.295 (−0.347, −0.244) | −14.7 | −0.1 s (−6.5, +6.3) |
+| Until 25% (sigma ≥ 0.973) | 3 of 8 | −0.389 (−0.455, −0.324) | −15.3 | −10.1 s (−13.9, −6.4) |
+| From 50% (sigma ≤ 0.923) | 4 of 8 | −0.034 (−0.058, −0.011) | −3.80 | −5.9 s (−9.3, −2.5) |
+| From 62.5% (sigma ≤ 0.878) | 3 of 8 | −0.049 (−0.097, −0.001) | −2.62 | −6.4 s (−10.6, −2.1) |
+| From 75% (sigma ≤ 0.8) | 2 of 8 | −0.113 (−0.224, −0.001) | −2.60 | −7.9 s (−11.8, −4.1) |
 
 ## Findings
 
@@ -157,15 +174,23 @@ re-rendered in the same session, n = 6:
   without a measurable gain over 48. Grid 48 is 768 px, the long side of these
   renders; whether the knee follows the render size was not tested.
 - **Six stills are more than enough.** Leaving any one out changed identity by
-  −0.019 to +0.007, none significantly, and saved 216 tokens.
-- **The reference is needed until the last steps.** At H3's shift of 12 the
-  first five of eight steps run at sigma 0.92 or above. Removing the reference
-  after them lost 0.295, and after three steps 0.389, close to rendering
-  without one. The renders kept the pose, hair and lighting; the face drifted.
-  A weaker reference cost little: loader strength 0.8 and `concept_at_start`
-  (0.69–1.0) were not measurably worse, while `concept_at_end`, which blurs the
-  reference to 0–0.31 for the whole run, lost 0.299. Fix H3 RefMod Config
-  saved that curve by default; it saves `constant` since 0.3.2.
+  −0.019 to +0.007, none significantly, and saved 216 tokens. Four stills at
+  grid 48 were not measurably worse than all six squeezed into the same budget,
+  so the `truncate` budget, which shrinks the grid to keep every still, needs no
+  change; three stills lost 0.044.
+- **The reference is needed at every step.** At H3's shift of 12 the first
+  five of eight steps run at sigma 0.92 or above. Removing the reference after
+  them lost 0.295, and after three steps 0.389, close to rendering without one.
+  The renders kept the pose, hair and lighting; the face drifted. Adding it
+  from the fifth step lost 0.034, from the sixth 0.049 and from the seventh
+  0.113, most of it in the portraits, whose background, hair and lighting then
+  followed the prompt alone. From the fifth step saved 5.9 s, close to what
+  grid 36 saves over grid 48 for a similar loss (−0.029), so neither build
+  shipped. A weaker reference cost little: loader strength 0.8 and
+  `concept_at_start` (0.69–1.0) were not measurably worse, while
+  `concept_at_end`, which blurs the reference to 0–0.31 for the whole run, lost
+  0.299. Fix H3 RefMod Config saved that curve by default; it saves `constant`
+  since 0.3.2.
 - **Creation is unchanged.** Through a real VAE round trip, area downscaling
   kept the most facial identity (SFace of the decode against the source: 0.851
   at grid 36, 0.779 at grid 24). Lanczos, antialiased bicubic and an unsharp
@@ -178,7 +203,7 @@ paired sd is 0.01–0.04, so differences under about 0.015 are not resolved.
 SFace measures face identity only, not body, hair, clothing or style. Single
 images, videos, bundles, other render sizes and other step counts were not
 rendered. Times compare ComfyUI sessions on the same machine; the 0.3.0 renders
-ran in an earlier one. The removal renders ran in a session where grid 48 took
-48.5 s instead of 41.0 s with identical output, so they are timed against grid
-48 re-rendered in that session. The harness is not included: it needs the
-private source stills and the YuNet and SFace models.
+ran in an earlier one. The Step Curve builds ran in sessions where grid 48 took
+48.5 s and 45.7 s instead of 41.0 s with identical output, so they are timed
+against grid 48 re-rendered in the same session. The harness is not included:
+it needs the private source stills and the YuNet and SFace models.

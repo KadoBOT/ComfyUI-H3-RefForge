@@ -9,7 +9,7 @@ rely on.
 
 - Append each RefMod's description to its reference-map line (`<Picture 1> = alice: adult woman with long brown hair`), so a description written at creation reaches an LLM prompt writer.
 - Default Fix H3 RefMod Config's saved Apply and Step Curve directions to `constant`, like Apply and Step Curve. With `override`, the old `concept_at_end` step curve kept the reference at 0–31% strength over an 8-step H3 run and cost 0.30 face identity.
-- EVALUATION.md: grids 16–64 and the `identity_encode` preset, leaving one photo out, loader strength, step curves and removing references late in denoising. Face identity rose with the grid up to 48 cells and needed the reference until the last steps.
+- EVALUATION.md: grids 16–64 and the `identity_encode` preset, fewer photos against a `max_tokens` budget, loader strength, step curves, and keeping references out of early or late denoising steps. Face identity rose with the grid up to 48 cells and needed the reference at every step.
 
 ## v0.3.1 (RefForge)
 
